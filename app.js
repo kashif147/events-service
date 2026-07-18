@@ -20,11 +20,13 @@ var app = express();
 
 app.set("etag", false);
 
-// Enabled by default (unlike sibling services, which comment this out and
-// rely on the gateway to make every service look same-origin) - events-service
-// has no gateway route configured yet, so direct calls from local dev
-// frontends need CORS handled here.
-app.use(corsMiddleware);
+// Disabled now that the gateway has a working /events-service/api/ route with
+// its own CORS headers (matching every sibling service) - having both add
+// CORS headers produces duplicate/conflicting values (e.g. two different
+// Access-Control-Expose-Headers), which browsers reject even though curl
+// doesn't. Re-enable only for direct-to-service local testing that bypasses
+// the gateway entirely.
+// app.use(corsMiddleware);
 
 const bizLogger = require("./config/bizLogger.js");
 const {
@@ -129,7 +131,7 @@ app.use(function (req, res, next) {
   });
 });
 
-app.use(corsErrorHandler);
+// app.use(corsErrorHandler); // disabled alongside corsMiddleware above
 app.use(logErrorMiddleware(bizLogger));
 app.use(responseMiddleware.errorHandler);
 
