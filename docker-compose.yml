@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  events-service:
+    container_name: events-service
+    build: .
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    env_file:
+      - ${ENV_COMMON_PATH:-../../config/.env.common}
+      - .env.staging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4011/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "4011:4011"
+    environment:
+      LOG_ROOT: /var/log/projectshell
+    volumes:
+      - /home/deploy/logs:/var/log/projectshell
+    restart: always
+    networks:
+      - gateway_app-net
+
+networks:
+  gateway_app-net:
+    external: true

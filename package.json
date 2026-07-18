@@ -1,0 +1,71 @@
+{
+  "name": "events-service",
+  "version": "1.0.0",
+  "description": "Events & Courses Service for Membership Management System",
+  "main": "bin/events-service.js",
+  "scripts": {
+    "start": "node bin/events-service.js",
+    "dev": "nodemon bin/events-service.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "echo \"No linting configured yet\" && exit 0",
+    "build": "echo \"No build step required\" && exit 0",
+    "docker:build": "docker build -t events-service .",
+    "docker:run": "docker run -p 4011:4011 events-service"
+  },
+  "keywords": [
+    "events",
+    "courses",
+    "membership",
+    "api",
+    "express",
+    "mongodb"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@membership/policy-middleware": "git+https://github.com/kashif147/policy-middleware.git#gateway",
+    "@projectShell/logging-lib": "git+https://github.com/kashif147/logging-lib.git#main",
+    "@projectShell/rabbitmq-middleware": "git+https://github.com/kashif147/rabbitmq-middleware.git#main",
+    "amqplib": "^0.10.9",
+    "axios": "^1.16.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "http-errors": "^2.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.0.3"
+  },
+  "devDependencies": {
+    "debug": "^4.3.4",
+    "jest": "^30.2.0",
+    "nodemon": "^3.0.2",
+    "supertest": "^7.1.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ],
+    "collectCoverageFrom": [
+      "**/*.js",
+      "!**/node_modules/**",
+      "!**/tests/**",
+      "!**/bin/**"
+    ],
+    "coverageDirectory": "coverage",
+    "coverageReporters": [
+      "text",
+      "lcov",
+      "html"
+    ],
+    "setupFilesAfterEnv": [
+      "<rootDir>/tests/setup.js"
+    ]
+  }
+}

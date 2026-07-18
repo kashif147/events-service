@@ -1,0 +1,47 @@
+class AppError extends Error {
+  constructor(message, status = 500, code = "APP_ERROR", extras = {}) {
+    super(message);
+    this.name = "AppError";
+    this.status = status;
+    this.code = code;
+    Object.assign(this, extras);
+  }
+
+  static conflict(message = "Version conflict", extras = {}) {
+    return new AppError(message, 409, "CONFLICT", extras);
+  }
+
+  static notFound(message = "Not found", extras = {}) {
+    return new AppError(message, 404, "NOT_FOUND", extras);
+  }
+
+  static badRequest(message = "Bad request", extras = {}) {
+    return new AppError(message, 400, "BAD_REQUEST", extras);
+  }
+
+  static forbidden(message = "Access denied", extras = {}) {
+    return new AppError(message, 403, "FORBIDDEN", extras);
+  }
+
+  static unauthorized(message = "Unauthorized", extras = {}) {
+    return new AppError(message, 401, "UNAUTHORIZED", extras);
+  }
+
+  static internalServerError(message = "Internal server error", extras = {}) {
+    return new AppError(message, 500, "INTERNAL_SERVER_ERROR", extras);
+  }
+
+  static serviceUnavailable(message = "Service unavailable", extras = {}) {
+    return new AppError(message, 503, "SERVICE_UNAVAILABLE", extras);
+  }
+
+  static unprocessableEntity(message = "Unprocessable entity", extras = {}) {
+    return new AppError(message, 422, "UNPROCESSABLE_ENTITY", extras);
+  }
+
+  static tooManyRequests(message = "Too many requests", extras = {}) {
+    return new AppError(message, 429, "TOO_MANY_REQUESTS", extras);
+  }
+}
+
+module.exports = { AppError };

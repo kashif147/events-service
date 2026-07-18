@@ -1,0 +1,58 @@
+name: Deploy Events Service
+
+on:
+  push:
+    branches:
+      - gateway
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf "%s" "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Sync code
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} "chmod -R u+w /home/deploy/membership-platform/events-service/ 2>/dev/null || true"
+          # Never use rsync --delete-excluded: excluded env files must remain on the VM.
+          rsync -rlvz --delete \
+          --mkpath \
+          --no-owner --no-group --no-perms --no-times --omit-dir-times \
+          --no-xattrs \
+          --safe-links \
+          -M--no-owner -M--no-group -M--no-perms -M--omit-dir-times \
+          --include '.env.example' \
+          --include '.env.sample' \
+          --exclude '.env' \
+          --exclude '.env.*' \
+          --exclude '.env_*' \
+          --exclude '*.env' \
+          --exclude '.envrc' \
+          --exclude '.git/' \
+          --exclude '.github/' \
+          --exclude 'node_modules/' \
+          --exclude '*.log' \
+          --itemize-changes \
+          --stats \
+          -e "ssh -o StrictHostKeyChecking=no" ./ \
+          ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:/home/deploy/membership-platform/events-service/
+
+      - name: Build and restart events-service
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }} << 'EOF'
+            cd /home/deploy/membership-platform/events-service
+            docker compose build events-service
+            docker compose up -d events-service
+          EOF
