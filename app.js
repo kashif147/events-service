@@ -14,10 +14,17 @@ const session = require("express-session");
 const loggerMiddleware = require("./middlewares/logger.mw");
 const responseMiddleware = require("./middlewares/response.mw");
 const { authenticate } = require("./middlewares/auth");
+const { corsMiddleware, corsErrorHandler } = require("./config/cors");
 
 var app = express();
 
 app.set("etag", false);
+
+// Enabled by default (unlike sibling services, which comment this out and
+// rely on the gateway to make every service look same-origin) - events-service
+// has no gateway route configured yet, so direct calls from local dev
+// frontends need CORS handled here.
+app.use(corsMiddleware);
 
 const bizLogger = require("./config/bizLogger.js");
 const {
@@ -122,6 +129,7 @@ app.use(function (req, res, next) {
   });
 });
 
+app.use(corsErrorHandler);
 app.use(logErrorMiddleware(bizLogger));
 app.use(responseMiddleware.errorHandler);
 
