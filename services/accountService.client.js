@@ -4,12 +4,34 @@ const ACCOUNT_SERVICE_URL =
   process.env.ACCOUNT_SERVICE_URL ||
   "http://projectshell-vm.northeurope.cloudapp.azure.com/account-service";
 
-function headers(tenantId) {
-  return {
+/**
+ * Same pattern as profile-service/services/account.service.client.js: forward
+ * the original caller's gateway-verified headers (JWT/tenant/user) rather
+ * than a shared secret - there is no API-key convention anywhere in this
+ * codebase for service-to-service calls, only x-internal-request plus
+ * forwarded auth context (or forwarded headers when there is an originating
+ * user request, which registration creation always has).
+ */
+function buildHeaders(req, tenantId) {
+  const headers = {
     "Content-Type": "application/json",
-    "x-tenant-id": tenantId,
-    "x-api-key": process.env.ACCOUNTS_API_KEY,
+    "x-tenant-id": tenantId || req?.headers?.["x-tenant-id"] || "",
+    "x-internal-request": "true",
   };
+
+  if (req?.headers?.authorization) headers.authorization = req.headers.authorization;
+  if (req?.headers?.["x-jwt-verified"]) headers["x-jwt-verified"] = req.headers["x-jwt-verified"];
+  if (req?.headers?.["x-auth-source"]) headers["x-auth-source"] = req.headers["x-auth-source"];
+  if (req?.headers?.["x-user-id"]) headers["x-user-id"] = req.headers["x-user-id"];
+  if (req?.headers?.["x-user-email"]) headers["x-user-email"] = req.headers["x-user-email"];
+  if (req?.headers?.["x-user-type"]) headers["x-user-type"] = req.headers["x-user-type"];
+  if (req?.headers?.["x-user-roles"]) headers["x-user-roles"] = req.headers["x-user-roles"];
+  if (req?.headers?.["x-user-permissions"]) headers["x-user-permissions"] = req.headers["x-user-permissions"];
+
+  const correlationId = req?.correlationId || req?.headers?.["x-correlation-id"];
+  if (correlationId) headers["x-correlation-id"] = String(correlationId);
+
+  return headers;
 }
 
 /**
@@ -19,6 +41,7 @@ function headers(tenantId) {
  * ledgerDomain/registrationId fields).
  */
 async function createRegistrationPaymentIntent({
+  req,
   tenantId,
   registrationId,
   profileId,
@@ -45,7 +68,7 @@ async function createRegistrationPaymentIntent({
       ledgerDomain: "events",
       source: "events-service",
     },
-    { headers: headers(tenantId), timeout: 15000 },
+    { headers: buildHeaders(req, tenantId), timeout: 15000 },
   );
   return response.data?.data;
 }
@@ -57,6 +80,7 @@ async function createRegistrationPaymentIntent({
  * postManualEventPayment()).
  */
 async function postManualRegistrationPayment({
+  req,
   tenantId,
   registrationId,
   profileId,
@@ -78,7 +102,7 @@ async function postManualRegistrationPayment({
       currency,
       method,
     },
-    { headers: headers(tenantId), timeout: 15000 },
+    { headers: buildHeaders(req, tenantId), timeout: 15000 },
   );
   return response.data?.data;
 }

@@ -140,6 +140,7 @@ async function createRegistration(req, res, next) {
     let paymentPayload = null;
     if (method === "stripe") {
       const intent = await createRegistrationPaymentIntent({
+        req,
         tenantId,
         registrationId: String(registration._id),
         profileId,
@@ -154,6 +155,7 @@ async function createRegistration(req, res, next) {
       paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
     } else {
       const manual = await postManualRegistrationPayment({
+        req,
         tenantId,
         registrationId: String(registration._id),
         profileId,
