@@ -10,6 +10,7 @@ const PRODUCT_SYNC_TRIGGER_FIELDS = [
   "startDate",
   "endDate",
   "eventCategoryCode",
+  "eventCategoryProductTypeId",
   "description",
 ];
 
@@ -88,6 +89,7 @@ async function createEvent(req, res, next) {
       productId,
       productCode,
       eventCategoryCode,
+      eventCategoryProductTypeId,
       eventTypeId,
       memberPrice,
       nonMemberPrice,
@@ -117,6 +119,7 @@ async function createEvent(req, res, next) {
       productId,
       productCode,
       eventCategoryCode,
+      eventCategoryProductTypeId,
       eventTypeId,
       memberPrice,
       nonMemberPrice,
@@ -140,7 +143,7 @@ async function createEvent(req, res, next) {
     });
 
     let warning;
-    if (eventCategoryCode && memberPrice != null && nonMemberPrice != null) {
+    if (eventCategoryProductTypeId && memberPrice != null && nonMemberPrice != null) {
       try {
         const link = await ensureEventProductLink(event, req, tenantId);
         event = await Event.findByIdAndUpdate(event._id, { $set: link }, { new: true });
@@ -199,7 +202,7 @@ async function updateEvent(req, res, next) {
     const shouldSyncProduct = PRODUCT_SYNC_TRIGGER_FIELDS.some((field) =>
       Object.prototype.hasOwnProperty.call(body, field),
     );
-    if (shouldSyncProduct && event.eventCategoryCode && event.memberPrice != null && event.nonMemberPrice != null) {
+    if (shouldSyncProduct && event.eventCategoryProductTypeId && event.memberPrice != null && event.nonMemberPrice != null) {
       try {
         if (!event.productId) {
           const link = await ensureEventProductLink(event, req, tenantId);

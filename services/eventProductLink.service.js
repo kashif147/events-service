@@ -8,10 +8,23 @@ const {
 } = require("./product.client");
 
 // Static per-category GL income codes (see backend/account-service/scripts/seed-cpd-events-income-coa.js).
+// Falls back to the shared default (4500, see account-service's
+// eventRegistration.approval.listener.js) for any category code that isn't
+// one of these two recognized ones.
 const INCOME_CODE_BY_CATEGORY = {
   EVENTS: "4520",
   CONTINUOUS_PROFESSIONAL_DEVELOPMENT: "4510",
 };
+const DEFAULT_INCOME_CODE = "4500";
+
+// The Event carries the real ProductType _id the admin picked (set by the
+// frontend, which fetches actual ProductTypes rather than assuming a fixed
+// code exists) - use that directly. Only fall back to resolving by code for
+// events saved before eventCategoryProductTypeId existed.
+async function resolveEventProductTypeId(event, req, tenantId) {
+  if (event.eventCategoryProductTypeId) return event.eventCategoryProductTypeId;
+  return resolveProductTypeId(req, tenantId, event.eventCategoryCode);
+}
 
 function generateProductCode(eventId) {
   return `EVT-${String(eventId).slice(-12)}`.toUpperCase();
@@ -32,8 +45,8 @@ function resolveEffectiveDates(event) {
 
 /** Create a new Product + Pricing for an event that has no linked productId yet. */
 async function ensureEventProductLink(event, req, tenantId) {
-  const productTypeId = await resolveProductTypeId(req, tenantId, event.eventCategoryCode);
-  const incomeAccountCode = INCOME_CODE_BY_CATEGORY[event.eventCategoryCode];
+  const productTypeId = await resolveEventProductTypeId(event, req, tenantId);
+  const incomeAccountCode = INCOME_CODE_BY_CATEGORY[event.eventCategoryCode] || DEFAULT_INCOME_CODE;
   const { effectiveFrom, effectiveTo } = resolveEffectiveDates(event);
 
   const product = await createProduct(req, tenantId, {
@@ -58,8 +71,8 @@ async function ensureEventProductLink(event, req, tenantId) {
 
 /** Push an already-linked event's current fields onto its existing Product + Pricing. */
 async function syncEventProductLink(event, req, tenantId) {
-  const productTypeId = await resolveProductTypeId(req, tenantId, event.eventCategoryCode);
-  const incomeAccountCode = INCOME_CODE_BY_CATEGORY[event.eventCategoryCode];
+  const productTypeId = await resolveEventProductTypeId(event, req, tenantId);
+  const incomeAccountCode = INCOME_CODE_BY_CATEGORY[event.eventCategoryCode] || DEFAULT_INCOME_CODE;
 
   await updateProduct(req, tenantId, event.productId, {
     name: event.title,

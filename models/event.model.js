@@ -7,11 +7,13 @@ const EventSchema = new mongoose.Schema(
     description: { type: String, default: null },
     productId: { type: String, default: null }, // ref into user-service Product (Event ProductType)
     productCode: { type: String, default: null },
-    eventCategoryCode: {
-      type: String,
-      enum: ["EVENTS", "CONTINUOUS_PROFESSIONAL_DEVELOPMENT", null],
-      default: null,
-    },
+    // The user-service ProductType this event's Product gets created under -
+    // the authoritative reference (no enum: whatever real ProductType the
+    // admin picked in Product Management, not a guessed/hardcoded code).
+    eventCategoryProductTypeId: { type: String, default: null },
+    // That ProductType's own `code` at selection time - kept for display and
+    // for mapping to the correct GL income account, without a re-lookup.
+    eventCategoryCode: { type: String, default: null },
     eventTypeId: { type: String, default: null }, // ref into user-service Lookup ("Event Type")
     memberPrice: { type: Number, default: null },
     nonMemberPrice: { type: Number, default: null },
