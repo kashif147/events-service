@@ -124,10 +124,10 @@ async function createEvent(req, res, next) {
         const link = await ensureEventProductLink(event, req, tenantId);
         event = await Event.findByIdAndUpdate(event._id, { $set: link }, { new: true });
       } catch (linkError) {
-        bizLogger.warn(
-          { eventId: event._id, error: linkError.message },
-          "Failed to auto-link Product/Pricing for new event",
-        );
+        bizLogger.error("Failed to auto-link Product/Pricing for new event", {
+          eventId: event._id,
+          error: linkError.message,
+        });
         warning = "Product/pricing link failed — link manually in Product Management";
       }
     }
@@ -186,10 +186,10 @@ async function updateEvent(req, res, next) {
           await syncEventProductLink(event, req, tenantId);
         }
       } catch (linkError) {
-        bizLogger.warn(
-          { eventId: event._id, error: linkError.message },
-          "Failed to sync Product/Pricing for updated event",
-        );
+        bizLogger.error("Failed to sync Product/Pricing for updated event", {
+          eventId: event._id,
+          error: linkError.message,
+        });
         warning = "Product/pricing sync failed — update manually in Product Management";
       }
     }
