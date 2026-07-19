@@ -1,6 +1,19 @@
 const Event = require("../models/event.model.js");
 const EventSession = require("../models/eventSession.model.js");
 const { AppError } = require("../errors/AppError.js");
+const { ensureEventProductLink, syncEventProductLink } = require("../services/eventProductLink.service.js");
+const bizLogger = require("../config/bizLogger.js");
+
+const PRODUCT_SYNC_TRIGGER_FIELDS = [
+  "memberPrice",
+  "nonMemberPrice",
+  "startDate",
+  "endDate",
+  "eventCategoryCode",
+  "description",
+];
+
+const PUBLISHED_LOCKED_STATUS_TARGETS = ["Cancelled", "Completed"];
 
 async function listEvents(req, res, next) {
   try {
@@ -55,35 +68,71 @@ async function createEvent(req, res, next) {
       description,
       productId,
       productCode,
+      eventCategoryCode,
+      eventTypeId,
+      memberPrice,
+      nonMemberPrice,
+      venueId,
       venue,
       isVirtual,
       startDate,
       endDate,
       capacity,
       status,
+      isActive,
+      cpdCredits,
+      accreditationBody,
+      certificationType,
+      autoIssueOnFinish,
+      costs,
     } = req.body || {};
 
     if (!title || !startDate || !endDate) {
       return next(AppError.badRequest("title, startDate and endDate are required"));
     }
 
-    const event = await Event.create({
+    let event = await Event.create({
       tenantId,
       title,
       description,
       productId,
       productCode,
+      eventCategoryCode,
+      eventTypeId,
+      memberPrice,
+      nonMemberPrice,
+      venueId,
       venue,
       isVirtual,
       startDate,
       endDate,
       capacity,
       status: status || "Draft",
+      isActive,
+      cpdCredits,
+      accreditationBody,
+      certificationType,
+      autoIssueOnFinish,
+      costs,
       createdBy: userId,
       updatedBy: userId,
     });
 
-    return res.status(201).json({ success: true, data: event });
+    let warning;
+    if (eventCategoryCode && memberPrice != null && nonMemberPrice != null) {
+      try {
+        const link = await ensureEventProductLink(event, req, tenantId);
+        event = await Event.findByIdAndUpdate(event._id, { $set: link }, { new: true });
+      } catch (linkError) {
+        bizLogger.warn(
+          { eventId: event._id, error: linkError.message },
+          "Failed to auto-link Product/Pricing for new event",
+        );
+        warning = "Product/pricing link failed — link manually in Product Management";
+      }
+    }
+
+    return res.status(201).json({ success: true, data: event, ...(warning ? { warning } : {}) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to create event"));
   }
@@ -92,13 +141,60 @@ async function createEvent(req, res, next) {
 async function updateEvent(req, res, next) {
   try {
     const { tenantId, userId } = req.ctx;
-    const event = await Event.findOneAndUpdate(
+    const existing = await Event.findOne({
+      _id: req.params.id,
+      tenantId,
+      isDeleted: { $ne: true },
+    });
+    if (!existing) return next(AppError.notFound("Event not found"));
+
+    const body = req.body || {};
+
+    if (existing.status === "Published") {
+      const disallowedKey = Object.keys(body).find(
+        (key) => key !== "status" && key !== "isActive" && key !== "description",
+      );
+      if (disallowedKey) {
+        return next(
+          AppError.badRequest("Published events can only have their status or active flag changed"),
+        );
+      }
+      if (body.status && !PUBLISHED_LOCKED_STATUS_TARGETS.includes(body.status)) {
+        return next(
+          AppError.badRequest(`Published events can only move to: ${PUBLISHED_LOCKED_STATUS_TARGETS.join(", ")}`),
+        );
+      }
+    }
+
+    let event = await Event.findOneAndUpdate(
       { _id: req.params.id, tenantId, isDeleted: { $ne: true } },
-      { $set: { ...req.body, updatedBy: userId } },
+      { $set: { ...body, updatedBy: userId } },
       { new: true, runValidators: true },
     );
     if (!event) return next(AppError.notFound("Event not found"));
-    return res.status(200).json({ success: true, data: event });
+
+    let warning;
+    const shouldSyncProduct = PRODUCT_SYNC_TRIGGER_FIELDS.some((field) =>
+      Object.prototype.hasOwnProperty.call(body, field),
+    );
+    if (shouldSyncProduct && event.eventCategoryCode && event.memberPrice != null && event.nonMemberPrice != null) {
+      try {
+        if (!event.productId) {
+          const link = await ensureEventProductLink(event, req, tenantId);
+          event = await Event.findByIdAndUpdate(event._id, { $set: link }, { new: true });
+        } else {
+          await syncEventProductLink(event, req, tenantId);
+        }
+      } catch (linkError) {
+        bizLogger.warn(
+          { eventId: event._id, error: linkError.message },
+          "Failed to sync Product/Pricing for updated event",
+        );
+        warning = "Product/pricing sync failed — update manually in Product Management";
+      }
+    }
+
+    return res.status(200).json({ success: true, data: event, ...(warning ? { warning } : {}) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to update event"));
   }
