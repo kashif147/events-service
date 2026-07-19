@@ -46,6 +46,16 @@ async function resolveProductTypeId(req, tenantId, code) {
   return match._id;
 }
 
+async function findProductByCode(req, tenantId, code) {
+  const response = await axios.get(`${USER_SERVICE_URL}/api/products`, {
+    headers: buildHeaders(req, tenantId),
+    params: { code },
+    timeout: 15000,
+  });
+  const products = response.data?.data || [];
+  return products.find((p) => p.code === String(code).toUpperCase()) || null;
+}
+
 async function createProduct(req, tenantId, { name, code, description, productTypeId, incomeAccountCode }) {
   const response = await axios.post(
     `${USER_SERVICE_URL}/api/products`,
@@ -93,6 +103,7 @@ async function updatePricing(req, tenantId, pricingId, { memberPrice, nonMemberP
 
 module.exports = {
   resolveProductTypeId,
+  findProductByCode,
   createProduct,
   updateProduct,
   createPricing,

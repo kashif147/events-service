@@ -1,5 +1,6 @@
 const {
   resolveProductTypeId,
+  findProductByCode,
   createProduct,
   updateProduct,
   createPricing,
@@ -70,28 +71,49 @@ function resolveEffectiveDates(event) {
   return { effectiveFrom, effectiveTo: isSameDay ? event.startDate : endDate };
 }
 
-/** Create a new Product + Pricing for an event that has no linked productId yet. */
+/**
+ * Create a new Product + Pricing for an event that has no linked productId
+ * yet. Idempotent by design: the generated code is deterministic (derived
+ * from the event's own _id), so if a prior attempt created the Product but
+ * failed before the Event got its productId saved (e.g. Pricing creation
+ * failed, or the save-back to the Event failed), a retry would otherwise
+ * hit the unique code index and fail forever with "Product code already
+ * exists". Look the code up first and reuse/update it instead of blindly
+ * creating.
+ */
 async function ensureEventProductLink(event, req, tenantId) {
   const productTypeId = await resolveEventProductTypeId(event, req, tenantId);
   const incomeAccountCode = INCOME_CODE_BY_CATEGORY[event.eventCategoryCode] || DEFAULT_INCOME_CODE;
   const { effectiveFrom, effectiveTo } = resolveEffectiveDates(event);
+  const code = generateProductCode(event._id);
 
-  const product = await createProduct(req, tenantId, {
+  const productFields = {
     name: event.title,
-    code: generateProductCode(event._id),
     description: toProductDescription(event.description),
     productTypeId,
     incomeAccountCode,
-  });
+  };
 
-  await createPricing(req, tenantId, {
-    productId: product._id,
-    currency: "EUR",
+  let product = await findProductByCode(req, tenantId, code);
+  if (product) {
+    product = await updateProduct(req, tenantId, product._id, productFields);
+  } else {
+    product = await createProduct(req, tenantId, { ...productFields, code });
+  }
+
+  const pricingFields = {
     memberPrice: event.memberPrice,
     nonMemberPrice: event.nonMemberPrice,
     effectiveFrom,
     effectiveTo,
-  });
+  };
+
+  const existingPricing = (await getPricingByProduct(req, tenantId, product._id))[0];
+  if (existingPricing) {
+    await updatePricing(req, tenantId, existingPricing._id, pricingFields);
+  } else {
+    await createPricing(req, tenantId, { productId: product._id, currency: "EUR", ...pricingFields });
+  }
 
   return { productId: product._id, productCode: product.code };
 }
