@@ -15,6 +15,17 @@ const PRODUCT_SYNC_TRIGGER_FIELDS = [
 
 const PUBLISHED_LOCKED_STATUS_TARGETS = ["Cancelled", "Completed"];
 
+// Logging must never be able to turn a "the event saved fine, just the
+// optional Product/Pricing link failed" outcome into a false 500 - a broken
+// logger call previously escaped its catch block and did exactly that.
+function safeLogError(message, meta) {
+  try {
+    bizLogger.error(message, meta);
+  } catch (_loggingError) {
+    // Swallow - logging failures must never affect the response.
+  }
+}
+
 async function listEvents(req, res, next) {
   try {
     const { tenantId } = req.ctx;
@@ -124,7 +135,7 @@ async function createEvent(req, res, next) {
         const link = await ensureEventProductLink(event, req, tenantId);
         event = await Event.findByIdAndUpdate(event._id, { $set: link }, { new: true });
       } catch (linkError) {
-        bizLogger.error("Failed to auto-link Product/Pricing for new event", {
+        safeLogError("Failed to auto-link Product/Pricing for new event", {
           eventId: event._id,
           error: linkError.message,
         });
@@ -186,7 +197,7 @@ async function updateEvent(req, res, next) {
           await syncEventProductLink(event, req, tenantId);
         }
       } catch (linkError) {
-        bizLogger.error("Failed to sync Product/Pricing for updated event", {
+        safeLogError("Failed to sync Product/Pricing for updated event", {
           eventId: event._id,
           error: linkError.message,
         });
@@ -203,12 +214,21 @@ async function updateEvent(req, res, next) {
 async function softDeleteEvent(req, res, next) {
   try {
     const { tenantId, userId } = req.ctx;
+    const existing = await Event.findOne({
+      _id: req.params.id,
+      tenantId,
+      isDeleted: { $ne: true },
+    });
+    if (!existing) return next(AppError.notFound("Event not found"));
+    if (existing.status !== "Draft") {
+      return next(AppError.badRequest("Only Draft events can be deleted"));
+    }
+
     const event = await Event.findOneAndUpdate(
       { _id: req.params.id, tenantId },
       { $set: { isDeleted: true, isActive: false, updatedBy: userId } },
       { new: true },
     );
-    if (!event) return next(AppError.notFound("Event not found"));
     return res.status(200).json({ success: true, data: event });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to delete event"));
