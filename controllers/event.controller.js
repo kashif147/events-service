@@ -26,6 +26,14 @@ function safeLogError(message, meta) {
   }
 }
 
+// Axios errors' own .message is a generic "Request failed with status code
+// 400" - the useful reason is nested in the downstream service's AppError
+// response envelope. Surface that instead so the warning is self-diagnosable
+// without needing server log access.
+function extractLinkErrorMessage(error) {
+  return error?.response?.data?.error?.message || error?.message || "Unknown error";
+}
+
 async function listEvents(req, res, next) {
   try {
     const { tenantId } = req.ctx;
@@ -126,7 +134,9 @@ async function createEvent(req, res, next) {
       autoIssueOnFinish,
       costs,
       createdBy: userId,
+      createdByEmail: req.user?.email || null,
       updatedBy: userId,
+      updatedByEmail: req.user?.email || null,
     });
 
     let warning;
@@ -135,11 +145,12 @@ async function createEvent(req, res, next) {
         const link = await ensureEventProductLink(event, req, tenantId);
         event = await Event.findByIdAndUpdate(event._id, { $set: link }, { new: true });
       } catch (linkError) {
+        const reason = extractLinkErrorMessage(linkError);
         safeLogError("Failed to auto-link Product/Pricing for new event", {
           eventId: event._id,
-          error: linkError.message,
+          error: reason,
         });
-        warning = "Product/pricing link failed — link manually in Product Management";
+        warning = `Product/pricing link failed: ${reason} — link manually in Product Management`;
       }
     }
 
@@ -179,7 +190,7 @@ async function updateEvent(req, res, next) {
 
     let event = await Event.findOneAndUpdate(
       { _id: req.params.id, tenantId, isDeleted: { $ne: true } },
-      { $set: { ...body, updatedBy: userId } },
+      { $set: { ...body, updatedBy: userId, updatedByEmail: req.user?.email || null } },
       { new: true, runValidators: true },
     );
     if (!event) return next(AppError.notFound("Event not found"));
@@ -197,11 +208,12 @@ async function updateEvent(req, res, next) {
           await syncEventProductLink(event, req, tenantId);
         }
       } catch (linkError) {
+        const reason = extractLinkErrorMessage(linkError);
         safeLogError("Failed to sync Product/Pricing for updated event", {
           eventId: event._id,
-          error: linkError.message,
+          error: reason,
         });
-        warning = "Product/pricing sync failed — update manually in Product Management";
+        warning = `Product/pricing sync failed: ${reason} — update manually in Product Management`;
       }
     }
 

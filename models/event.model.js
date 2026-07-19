@@ -37,7 +37,9 @@ const EventSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true },
     isDeleted: { type: Boolean, default: false },
     createdBy: { type: String, default: null },
+    createdByEmail: { type: String, default: null },
     updatedBy: { type: String, default: null },
+    updatedByEmail: { type: String, default: null },
   },
   { timestamps: true },
 );
