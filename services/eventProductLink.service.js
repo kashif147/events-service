@@ -8,12 +8,15 @@ const {
 } = require("./product.client");
 
 // Static per-category GL income codes (see backend/account-service/scripts/seed-cpd-events-income-coa.js).
+// Keyed by the real ProductType codes in Product Management (confirmed via
+// GET /api/product-types - "CPD" and "EVENT", not assumed/guessed strings).
 // Falls back to the shared default (4500, see account-service's
-// eventRegistration.approval.listener.js) for any category code that isn't
-// one of these two recognized ones.
+// eventRegistration.approval.listener.js) for any other category, so a new
+// non-Membership ProductType the admin adds later degrades safely instead
+// of failing, until its own income code is added here.
 const INCOME_CODE_BY_CATEGORY = {
-  EVENTS: "4520",
-  CONTINUOUS_PROFESSIONAL_DEVELOPMENT: "4510",
+  EVENT: "4520",
+  CPD: "4510",
 };
 const DEFAULT_INCOME_CODE = "4500";
 
@@ -28,6 +31,30 @@ async function resolveEventProductTypeId(event, req, tenantId) {
 
 function generateProductCode(eventId) {
   return `EVT-${String(eventId).slice(-12)}`.toUpperCase();
+}
+
+// user-service's Product.description caps at 500 chars, but the event
+// description is rich HTML from the Quill editor - all the markup/inline
+// styles push it well past that even for a short write-up. Collapse it to a
+// short plain-text summary instead of sending the raw HTML and hitting the
+// same "longer than the maximum allowed length" validation error every time.
+const PRODUCT_DESCRIPTION_MAX_LENGTH = 4000;
+function toProductDescription(html) {
+  if (!html) return undefined;
+  const plain = String(html)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!plain) return undefined;
+  return plain.length <= PRODUCT_DESCRIPTION_MAX_LENGTH
+    ? plain
+    : `${plain.slice(0, PRODUCT_DESCRIPTION_MAX_LENGTH - 1)}…`;
 }
 
 function toDateOnly(date) {
@@ -52,7 +79,7 @@ async function ensureEventProductLink(event, req, tenantId) {
   const product = await createProduct(req, tenantId, {
     name: event.title,
     code: generateProductCode(event._id),
-    description: event.description || undefined,
+    description: toProductDescription(event.description),
     productTypeId,
     incomeAccountCode,
   });
@@ -76,7 +103,7 @@ async function syncEventProductLink(event, req, tenantId) {
 
   await updateProduct(req, tenantId, event.productId, {
     name: event.title,
-    description: event.description || undefined,
+    description: toProductDescription(event.description),
     productTypeId,
     incomeAccountCode,
   });

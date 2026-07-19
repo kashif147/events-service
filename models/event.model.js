@@ -4,7 +4,7 @@ const EventSchema = new mongoose.Schema(
   {
     tenantId: { type: String, required: true, index: true },
     title: { type: String, required: true },
-    description: { type: String, default: null },
+    description: { type: String, default: null, maxlength: 4000 },
     productId: { type: String, default: null }, // ref into user-service Product (Event ProductType)
     productCode: { type: String, default: null },
     // The user-service ProductType this event's Product gets created under -
