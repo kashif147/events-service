@@ -23,6 +23,12 @@ const EventSchema = new mongoose.Schema(
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
     capacity: { type: Number, default: null },
+    // Refund window: number of days before startDate up to which a refund is
+    // allowed. 0 = no refunds. Mandatory at the controller level (see
+    // createEvent) rather than schema-required, to match the other
+    // application-enforced-mandatory fields and avoid breaking existing
+    // records/programmatic writes.
+    refundPolicyDays: { type: Number, default: null, min: 0 },
     cpdCredits: { type: Number, default: null },
     accreditationBody: { type: String, default: null },
     certificationType: { type: String, default: null },

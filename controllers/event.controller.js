@@ -106,6 +106,7 @@ async function createEvent(req, res, next) {
       certificationType,
       autoIssueOnFinish,
       costs,
+      refundPolicyDays,
     } = req.body || {};
 
     if (!title || !startDate || !endDate) {
@@ -119,6 +120,12 @@ async function createEvent(req, res, next) {
     }
     if (!description || !String(description).replace(/<[^>]*>/g, "").trim()) {
       return next(AppError.badRequest("description is required"));
+    }
+    if (refundPolicyDays === undefined || refundPolicyDays === null || refundPolicyDays === "") {
+      return next(AppError.badRequest("refundPolicyDays is required"));
+    }
+    if (typeof refundPolicyDays !== "number" || Number.isNaN(refundPolicyDays) || refundPolicyDays < 0) {
+      return next(AppError.badRequest("refundPolicyDays must be a number of 0 or more"));
     }
 
     let event = await Event.create({
@@ -145,6 +152,7 @@ async function createEvent(req, res, next) {
       certificationType,
       autoIssueOnFinish,
       costs,
+      refundPolicyDays,
       createdBy: userId,
       createdByEmail: req.user?.email || null,
       updatedBy: userId,
