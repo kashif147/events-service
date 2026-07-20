@@ -46,10 +46,13 @@ function extractLinkErrorMessage(error) {
 async function listEvents(req, res, next) {
   try {
     const { tenantId } = req.ctx;
-    const { status, from, to, q } = req.query;
+    const { status, from, to, q, eventCategoryCode } = req.query;
 
     const filter = { tenantId, isDeleted: { $ne: true } };
+    // status omitted -> all events; status=Published -> published only
+    // (same param also covers Draft/Cancelled/Completed).
     if (status) filter.status = status;
+    if (eventCategoryCode) filter.eventCategoryCode = eventCategoryCode;
     if (from || to) {
       filter.startDate = {};
       if (from) filter.startDate.$gte = new Date(from);
