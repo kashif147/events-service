@@ -111,6 +111,15 @@ async function createEvent(req, res, next) {
     if (!title || !startDate || !endDate) {
       return next(AppError.badRequest("title, startDate and endDate are required"));
     }
+    if (!eventCategoryProductTypeId) {
+      return next(AppError.badRequest("eventCategoryProductTypeId is required"));
+    }
+    if (!venueId) {
+      return next(AppError.badRequest("venueId is required"));
+    }
+    if (!description || !String(description).replace(/<[^>]*>/g, "").trim()) {
+      return next(AppError.badRequest("description is required"));
+    }
 
     let event = await Event.create({
       tenantId,
