@@ -19,5 +19,10 @@ router.put(
   defaultPolicyMiddleware.requirePermission("events", "write"),
   eventController.updateSession,
 );
+router.delete(
+  "/:id/sessions/:sessionId",
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  eventController.deleteSession,
+);
 
 module.exports = router;

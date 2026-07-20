@@ -23,6 +23,7 @@ const RegistrationSchema = new mongoose.Schema(
     sessionIds: [
       { type: mongoose.Schema.Types.ObjectId, ref: "EventSession" },
     ],
+    quantity: { type: Number, default: 1, min: 1 }, // seats/tickets booked by this single profile
     profileId: { type: String, required: true, index: true }, // always set - member or attendee-only profile
     membershipNumber: { type: String, default: null }, // cached; null if non-member at registration time
     isMemberAtRegistration: { type: Boolean, default: false },

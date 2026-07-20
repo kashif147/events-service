@@ -33,6 +33,9 @@ const EventSchema = new mongoose.Schema(
     accreditationBody: { type: String, default: null },
     certificationType: { type: String, default: null },
     autoIssueOnFinish: { type: Boolean, default: true },
+    // Multi-day only: whether attendees may register for a subset of days
+    // (true) or must register for every day (false, default).
+    allowPartialAttendance: { type: Boolean, default: false },
     costs: {
       type: [{ name: { type: String, required: true }, amount: { type: Number, default: 0 } }],
       default: [],

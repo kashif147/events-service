@@ -1,7 +1,13 @@
+const mongoose = require("mongoose");
 const Event = require("../models/event.model.js");
 const EventSession = require("../models/eventSession.model.js");
+const Registration = require("../models/registration.model.js");
 const { AppError } = require("../errors/AppError.js");
 const { ensureEventProductLink, syncEventProductLink } = require("../services/eventProductLink.service.js");
+const {
+  ensureEventSessionProductLink,
+  syncEventSessionProductLink,
+} = require("../services/eventSessionProductLink.service.js");
 const bizLogger = require("../config/bizLogger.js");
 
 const PRODUCT_SYNC_TRIGGER_FIELDS = [
@@ -13,6 +19,8 @@ const PRODUCT_SYNC_TRIGGER_FIELDS = [
   "eventCategoryProductTypeId",
   "description",
 ];
+
+const SESSION_PRODUCT_SYNC_TRIGGER_FIELDS = ["memberPrice", "nonMemberPrice", "date"];
 
 const PUBLISHED_LOCKED_STATUS_TARGETS = ["Cancelled", "Completed"];
 
@@ -56,6 +64,32 @@ async function listEvents(req, res, next) {
   }
 }
 
+/** Seats booked per event/session for this tenant, keyed by eventId (total) and each sessionId. */
+async function getSeatsBookedMap({ tenantId, eventId }) {
+  const rows = await Registration.aggregate([
+    {
+      $match: {
+        tenantId,
+        eventId: new mongoose.Types.ObjectId(eventId),
+        status: { $ne: "cancelled" },
+        isDeleted: { $ne: true },
+      },
+    },
+    { $project: { quantity: { $ifNull: ["$quantity", 1] }, sessionIds: 1 } },
+  ]);
+
+  let eventTotal = 0;
+  const bySession = new Map();
+  for (const row of rows) {
+    eventTotal += row.quantity;
+    for (const sessionId of row.sessionIds || []) {
+      const key = String(sessionId);
+      bySession.set(key, (bySession.get(key) || 0) + row.quantity);
+    }
+  }
+  return { eventTotal, bySession };
+}
+
 async function getEventById(req, res, next) {
   try {
     const { tenantId } = req.ctx;
@@ -74,7 +108,16 @@ async function getEventById(req, res, next) {
       .sort({ date: 1 })
       .lean();
 
-    return res.status(200).json({ success: true, data: { ...event, sessions } });
+    const { eventTotal, bySession } = await getSeatsBookedMap({ tenantId, eventId: event._id });
+    const sessionsWithSeats = sessions.map((session) => ({
+      ...session,
+      seatsBooked: bySession.get(String(session._id)) || 0,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      data: { ...event, seatsBooked: eventTotal, sessions: sessionsWithSeats },
+    });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to fetch event"));
   }
@@ -107,6 +150,7 @@ async function createEvent(req, res, next) {
       autoIssueOnFinish,
       costs,
       refundPolicyDays,
+      allowPartialAttendance,
     } = req.body || {};
 
     if (!title || !startDate || !endDate) {
@@ -153,6 +197,7 @@ async function createEvent(req, res, next) {
       autoIssueOnFinish,
       costs,
       refundPolicyDays,
+      allowPartialAttendance,
       createdBy: userId,
       createdByEmail: req.user?.email || null,
       updatedBy: userId,
@@ -277,12 +322,12 @@ async function addSession(req, res, next) {
     });
     if (!event) return next(AppError.notFound("Event not found"));
 
-    const { label, date, productId, productCode, capacity } = req.body || {};
+    const { label, date, productId, productCode, capacity, memberPrice, nonMemberPrice } = req.body || {};
     if (!label || !date) {
       return next(AppError.badRequest("label and date are required"));
     }
 
-    const session = await EventSession.create({
+    let session = await EventSession.create({
       tenantId,
       eventId: event._id,
       label,
@@ -290,17 +335,87 @@ async function addSession(req, res, next) {
       productId,
       productCode,
       capacity,
+      memberPrice,
+      nonMemberPrice,
       createdBy: userId,
       updatedBy: userId,
     });
 
-    return res.status(201).json({ success: true, data: session });
+    let warning;
+    if (event.eventCategoryProductTypeId && memberPrice != null && nonMemberPrice != null) {
+      try {
+        const link = await ensureEventSessionProductLink(session, event, req, tenantId);
+        session = await EventSession.findByIdAndUpdate(session._id, { $set: link }, { new: true });
+      } catch (linkError) {
+        const reason = extractLinkErrorMessage(linkError);
+        safeLogError("Failed to auto-link Product/Pricing for new session", {
+          sessionId: session._id,
+          eventId: event._id,
+          error: reason,
+        });
+        warning = `Product/pricing link failed: ${reason} — link manually in Product Management`;
+      }
+    }
+
+    return res.status(201).json({ success: true, data: session, ...(warning ? { warning } : {}) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to add session"));
   }
 }
 
 async function updateSession(req, res, next) {
+  try {
+    const { tenantId, userId } = req.ctx;
+    const event = await Event.findOne({
+      _id: req.params.id,
+      tenantId,
+      isDeleted: { $ne: true },
+    });
+    if (!event) return next(AppError.notFound("Event not found"));
+
+    const body = req.body || {};
+    let session = await EventSession.findOneAndUpdate(
+      {
+        _id: req.params.sessionId,
+        eventId: req.params.id,
+        tenantId,
+        isDeleted: { $ne: true },
+      },
+      { $set: { ...body, updatedBy: userId } },
+      { new: true, runValidators: true },
+    );
+    if (!session) return next(AppError.notFound("Session not found"));
+
+    let warning;
+    const shouldSyncProduct = SESSION_PRODUCT_SYNC_TRIGGER_FIELDS.some((field) =>
+      Object.prototype.hasOwnProperty.call(body, field),
+    );
+    if (shouldSyncProduct && event.eventCategoryProductTypeId && session.memberPrice != null && session.nonMemberPrice != null) {
+      try {
+        if (!session.productId) {
+          const link = await ensureEventSessionProductLink(session, event, req, tenantId);
+          session = await EventSession.findByIdAndUpdate(session._id, { $set: link }, { new: true });
+        } else {
+          await syncEventSessionProductLink(session, event, req, tenantId);
+        }
+      } catch (linkError) {
+        const reason = extractLinkErrorMessage(linkError);
+        safeLogError("Failed to sync Product/Pricing for updated session", {
+          sessionId: session._id,
+          eventId: event._id,
+          error: reason,
+        });
+        warning = `Product/pricing sync failed: ${reason} — update manually in Product Management`;
+      }
+    }
+
+    return res.status(200).json({ success: true, data: session, ...(warning ? { warning } : {}) });
+  } catch (error) {
+    return next(AppError.internalServerError(error.message || "Failed to update session"));
+  }
+}
+
+async function deleteSession(req, res, next) {
   try {
     const { tenantId, userId } = req.ctx;
     const session = await EventSession.findOneAndUpdate(
@@ -310,13 +425,13 @@ async function updateSession(req, res, next) {
         tenantId,
         isDeleted: { $ne: true },
       },
-      { $set: { ...req.body, updatedBy: userId } },
-      { new: true, runValidators: true },
+      { $set: { isDeleted: true, isActive: false, updatedBy: userId } },
+      { new: true },
     );
     if (!session) return next(AppError.notFound("Session not found"));
     return res.status(200).json({ success: true, data: session });
   } catch (error) {
-    return next(AppError.internalServerError(error.message || "Failed to update session"));
+    return next(AppError.internalServerError(error.message || "Failed to delete session"));
   }
 }
 
@@ -328,4 +443,5 @@ module.exports = {
   softDeleteEvent,
   addSession,
   updateSession,
+  deleteSession,
 };

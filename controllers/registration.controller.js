@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Event = require("../models/event.model.js");
 const EventSession = require("../models/eventSession.model.js");
 const Course = require("../models/course.model.js");
@@ -15,12 +16,12 @@ const {
   publishRegistrationCancelled,
 } = require("../rabbitMQ/publishers/registration.events.publisher.js");
 
-async function resolveAmount({ tenantId, registrationType, eventId, courseId, sessionIds, isMember }) {
+async function resolveAmount({ tenantId, registrationType, eventId, courseId, sessionIds, isMember, quantity = 1 }) {
   if (registrationType === "course") {
     const course = await Course.findOne({ _id: courseId, tenantId }).lean();
     if (!course) throw AppError.notFound("Course not found");
     const { amount, currency } = await getCurrentPriceForProduct(course.productId, { isMember });
-    return { amount, currency, productCode: course.productCode || null };
+    return { amount: amount * quantity, currency, productCode: course.productCode || null };
   }
 
   const event = await Event.findOne({ _id: eventId, tenantId }).lean();
@@ -39,11 +40,28 @@ async function resolveAmount({ tenantId, registrationType, eventId, courseId, se
       amount += priced.amount || 0;
       currency = priced.currency || currency;
     }
-    return { amount, currency, productCode: event.productCode || null };
+    return { amount: amount * quantity, currency, productCode: event.productCode || null };
   }
 
   const { amount, currency } = await getCurrentPriceForProduct(event.productId, { isMember });
-  return { amount, currency, productCode: event.productCode || null };
+  return { amount: amount * quantity, currency, productCode: event.productCode || null };
+}
+
+/** Sum seats already booked (active registrations) for an event or a specific session within it. */
+async function getBookedSeats({ tenantId, eventId, sessionId }) {
+  const match = {
+    tenantId,
+    eventId: new mongoose.Types.ObjectId(eventId),
+    status: { $ne: "cancelled" },
+    isDeleted: { $ne: true },
+  };
+  if (sessionId) match.sessionIds = new mongoose.Types.ObjectId(sessionId);
+
+  const [result] = await Registration.aggregate([
+    { $match: match },
+    { $group: { _id: null, total: { $sum: { $ifNull: ["$quantity", 1] } } } },
+  ]);
+  return result?.total || 0;
 }
 
 async function createRegistration(req, res, next) {
@@ -58,6 +76,7 @@ async function createRegistration(req, res, next) {
       paymentMethod,
       registeredVia,
       registeredByUserId,
+      quantity,
     } = req.body || {};
 
     if (!registrationType || !["event", "course"].includes(registrationType)) {
@@ -76,7 +95,42 @@ async function createRegistration(req, res, next) {
       return next(AppError.badRequest("registeredVia must be 'crm', 'portal' or 'mobile'"));
     }
 
-    // 1. Resolve (or create) the attendee's Profile - never enters the
+    const seatQuantity = quantity != null ? Number(quantity) : 1;
+    if (!Number.isInteger(seatQuantity) || seatQuantity < 1) {
+      return next(AppError.badRequest("quantity must be a positive integer"));
+    }
+
+    // 1. Enforce seat capacity, if the event/session(s) declare one, before
+    // doing anything else (fail fast rather than creating an attendee
+    // Profile only to reject the booking).
+    if (registrationType === "event") {
+      const event = await Event.findOne({ _id: eventId, tenantId }).lean();
+      if (!event) return next(AppError.notFound("Event not found"));
+
+      if (event.capacity != null) {
+        const booked = await getBookedSeats({ tenantId, eventId });
+        const remaining = event.capacity - booked;
+        if (seatQuantity > remaining) {
+          return next(AppError.badRequest(`Only ${Math.max(remaining, 0)} seat(s) remaining for this event`));
+        }
+      }
+
+      if (Array.isArray(sessionIds) && sessionIds.length > 0) {
+        const sessions = await EventSession.find({ _id: { $in: sessionIds }, tenantId, eventId }).lean();
+        for (const session of sessions) {
+          if (session.capacity == null) continue;
+          const bookedForSession = await getBookedSeats({ tenantId, eventId, sessionId: session._id });
+          const remaining = session.capacity - bookedForSession;
+          if (seatQuantity > remaining) {
+            return next(
+              AppError.badRequest(`Only ${Math.max(remaining, 0)} seat(s) remaining for session "${session.label}"`),
+            );
+          }
+        }
+      }
+    }
+
+    // 2. Resolve (or create) the attendee's Profile - never enters the
     // membership application pipeline.
     let profileId = profile.profileId;
     let membershipNumber = null;
@@ -93,7 +147,7 @@ async function createRegistration(req, res, next) {
     }
     const isMember = !!membershipNumber;
 
-    // 2. Price the registration.
+    // 3. Price the registration.
     const { amount, currency, productCode } = await resolveAmount({
       tenantId,
       registrationType,
@@ -101,6 +155,7 @@ async function createRegistration(req, res, next) {
       courseId,
       sessionIds,
       isMember,
+      quantity: seatQuantity,
     });
 
     const method = paymentMethod || "stripe";
@@ -114,6 +169,7 @@ async function createRegistration(req, res, next) {
       eventId: registrationType === "event" ? eventId : null,
       courseId: registrationType === "course" ? courseId : null,
       sessionIds: sessionIds || [],
+      quantity: seatQuantity,
       profileId,
       membershipNumber,
       isMemberAtRegistration: isMember,
@@ -136,7 +192,7 @@ async function createRegistration(req, res, next) {
 
     await publishRegistrationCreated(registration, tenantId);
 
-    // 3. Take payment.
+    // 4. Take payment.
     let paymentPayload = null;
     if (method === "stripe") {
       const intent = await createRegistrationPaymentIntent({

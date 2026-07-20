@@ -11,6 +11,8 @@ const EventSessionSchema = new mongoose.Schema(
     },
     label: { type: String, required: true }, // e.g. "Day 1: Opening Keynote"
     date: { type: Date, required: true },
+    memberPrice: { type: Number, default: null },
+    nonMemberPrice: { type: Number, default: null },
     productId: { type: String, default: null }, // per-session pricing product
     productCode: { type: String, default: null },
     capacity: { type: Number, default: null },

@@ -145,4 +145,12 @@ async function syncEventProductLink(event, req, tenantId) {
   });
 }
 
-module.exports = { ensureEventProductLink, syncEventProductLink };
+module.exports = {
+  ensureEventProductLink,
+  syncEventProductLink,
+  resolveEventProductTypeId,
+  INCOME_CODE_BY_CATEGORY,
+  DEFAULT_INCOME_CODE,
+  toProductDescription,
+  toDateOnly,
+};
