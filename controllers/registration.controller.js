@@ -36,7 +36,9 @@ async function resolveAmount({ tenantId, registrationType, eventId, courseId, se
     let amount = 0;
     let currency = "eur";
     for (const session of sessions) {
-      const priced = await getCurrentPriceForProduct(session.productId, { isMember });
+      // A session with no price of its own (per-day pricing off) prices at
+      // the event's own rate instead of silently coming out as 0.
+      const priced = await getCurrentPriceForProduct(session.productId || event.productId, { isMember });
       amount += priced.amount || 0;
       currency = priced.currency || currency;
     }

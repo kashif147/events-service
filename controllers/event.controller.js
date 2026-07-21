@@ -154,6 +154,7 @@ async function createEvent(req, res, next) {
       costs,
       refundPolicyDays,
       allowPartialAttendance,
+      perDayPricing,
     } = req.body || {};
 
     if (!title || !startDate || !endDate) {
@@ -201,6 +202,7 @@ async function createEvent(req, res, next) {
       costs,
       refundPolicyDays,
       allowPartialAttendance,
+      perDayPricing,
       createdBy: userId,
       createdByEmail: req.user?.email || null,
       updatedBy: userId,
@@ -325,7 +327,18 @@ async function addSession(req, res, next) {
     });
     if (!event) return next(AppError.notFound("Event not found"));
 
-    const { label, date, productId, productCode, capacity, memberPrice, nonMemberPrice } = req.body || {};
+    const {
+      label,
+      date,
+      startTime,
+      endTime,
+      isVirtual,
+      productId,
+      productCode,
+      capacity,
+      memberPrice,
+      nonMemberPrice,
+    } = req.body || {};
     if (!label || !date) {
       return next(AppError.badRequest("label and date are required"));
     }
@@ -335,6 +348,9 @@ async function addSession(req, res, next) {
       eventId: event._id,
       label,
       date,
+      startTime,
+      endTime,
+      isVirtual,
       productId,
       productCode,
       capacity,
@@ -377,6 +393,21 @@ async function updateSession(req, res, next) {
     if (!event) return next(AppError.notFound("Event not found"));
 
     const body = req.body || {};
+    // Caller is explicitly clearing this session's own price (e.g. switching
+    // a multi-day event from per-day pricing back to a single event price) -
+    // also drop its Product/Pricing link so a stale productId can't keep
+    // charging the old per-day amount once the per-session price is gone.
+    const clearingSessionPrice =
+      Object.prototype.hasOwnProperty.call(body, "memberPrice") &&
+      body.memberPrice == null &&
+      Object.prototype.hasOwnProperty.call(body, "nonMemberPrice") &&
+      body.nonMemberPrice == null;
+    const updateSet = { ...body, updatedBy: userId };
+    if (clearingSessionPrice) {
+      updateSet.productId = null;
+      updateSet.productCode = null;
+    }
+
     let session = await EventSession.findOneAndUpdate(
       {
         _id: req.params.sessionId,
@@ -384,7 +415,7 @@ async function updateSession(req, res, next) {
         tenantId,
         isDeleted: { $ne: true },
       },
-      { $set: { ...body, updatedBy: userId } },
+      { $set: updateSet },
       { new: true, runValidators: true },
     );
     if (!session) return next(AppError.notFound("Session not found"));

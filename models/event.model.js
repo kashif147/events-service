@@ -36,6 +36,10 @@ const EventSchema = new mongoose.Schema(
     // Multi-day only: whether attendees may register for a subset of days
     // (true) or must register for every day (false, default).
     allowPartialAttendance: { type: Boolean, default: false },
+    // Multi-day only, and only meaningful when allowPartialAttendance is
+    // true: whether each day carries its own memberPrice/nonMemberPrice (on
+    // its EventSession) rather than one price for the whole event.
+    perDayPricing: { type: Boolean, default: false },
     costs: {
       type: [{ name: { type: String, required: true }, amount: { type: Number, default: 0 } }],
       default: [],
