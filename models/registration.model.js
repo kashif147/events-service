@@ -24,6 +24,14 @@ const RegistrationSchema = new mongoose.Schema(
       { type: mongoose.Schema.Types.ObjectId, ref: "EventSession" },
     ],
     quantity: { type: Number, default: 1, min: 1 }, // seats/tickets booked by this single profile
+    // Which pricing tier the registrant selected/qualified for - "standard"
+    // resolves to member/non-member (with early bird applied automatically
+    // by date, not stored separately). Self-declared, not verified.
+    priceCategory: {
+      type: String,
+      enum: ["standard", "student", "group_student"],
+      default: "standard",
+    },
     profileId: { type: String, required: true, index: true }, // always set - member or attendee-only profile
     membershipNumber: { type: String, default: null }, // cached; null if non-member at registration time
     isMemberAtRegistration: { type: Boolean, default: false },

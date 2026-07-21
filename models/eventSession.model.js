@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { PricingTierSchema } = require("./pricingTier.schema.js");
 
 const EventSessionSchema = new mongoose.Schema(
   {
@@ -16,6 +17,9 @@ const EventSessionSchema = new mongoose.Schema(
     isVirtual: { type: Boolean, default: false }, // per-day in-person/online, for Hybrid event format
     memberPrice: { type: Number, default: null },
     nonMemberPrice: { type: Number, default: null },
+    // Optional per-day override of the event's pricing tiers (early bird,
+    // student, group student). Absent/empty defers to the event's own tiers.
+    pricingTiers: { type: [PricingTierSchema], default: [] },
     productId: { type: String, default: null }, // per-session pricing product
     productCode: { type: String, default: null },
     capacity: { type: Number, default: null },

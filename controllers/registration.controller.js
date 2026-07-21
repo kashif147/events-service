@@ -16,7 +16,55 @@ const {
   publishRegistrationCancelled,
 } = require("../rabbitMQ/publishers/registration.events.publisher.js");
 
-async function resolveAmount({ tenantId, registrationType, eventId, courseId, sessionIds, isMember, quantity = 1 }) {
+/**
+ * Resolve the per-person price (in euros) for a single Event or EventSession
+ * document - both share the memberPrice/nonMemberPrice/pricingTiers shape.
+ * Throws AppError.badRequest if the requested priceCategory isn't available
+ * on the entity, or (for group_student) if quantity doesn't meet the
+ * minimum group size.
+ */
+function resolveUnitPriceForEntity({ entity, entityLabel, isMember, priceCategory, quantity, now }) {
+  const tiers = Array.isArray(entity.pricingTiers) ? entity.pricingTiers : [];
+  const activeTierOfType = (tierType) =>
+    tiers.find((t) => t.tierType === tierType && t.isActive !== false);
+
+  if (priceCategory === "student") {
+    const tier = activeTierOfType("STUDENT");
+    if (!tier) throw AppError.badRequest(`Student pricing is not available for ${entityLabel}`);
+    return tier.price;
+  }
+
+  if (priceCategory === "group_student") {
+    const tier = activeTierOfType("GROUP_STUDENT");
+    if (!tier) throw AppError.badRequest(`Group student pricing is not available for ${entityLabel}`);
+    const minSize = tier.minGroupSize || 2;
+    if (quantity < minSize) {
+      throw AppError.badRequest(
+        `Group student pricing for ${entityLabel} requires at least ${minSize} seat(s) in this registration (you have ${quantity})`,
+      );
+    }
+    return tier.price; // per-person - caller multiplies by quantity
+  }
+
+  // "standard": early bird (if within cutoff) else the base price.
+  const earlyBirdType = isMember ? "EARLY_BIRD_MEMBER" : "EARLY_BIRD_NON_MEMBER";
+  const earlyBird = activeTierOfType(earlyBirdType);
+  if (earlyBird && earlyBird.cutoffDate && now <= new Date(earlyBird.cutoffDate)) {
+    return earlyBird.price;
+  }
+  return (isMember ? entity.memberPrice : entity.nonMemberPrice) || 0;
+}
+
+async function resolveAmount({
+  tenantId,
+  registrationType,
+  eventId,
+  courseId,
+  sessionIds,
+  isMember,
+  priceCategory = "standard",
+  quantity = 1,
+}) {
   if (registrationType === "course") {
     const course = await Course.findOne({ _id: courseId, tenantId }).lean();
     if (!course) throw AppError.notFound("Course not found");
@@ -28,6 +76,7 @@ async function resolveAmount({ tenantId, registrationType, eventId, courseId, se
 
   const event = await Event.findOne({ _id: eventId, tenantId }).lean();
   if (!event) throw AppError.notFound("Event not found");
+  const now = new Date();
 
   if (Array.isArray(sessionIds) && sessionIds.length > 0) {
     const sessions = await EventSession.find({
@@ -36,26 +85,44 @@ async function resolveAmount({ tenantId, registrationType, eventId, courseId, se
       eventId,
     }).lean();
     let amount = 0;
-    let currency = "eur";
     for (const session of sessions) {
-      // A session with no price of its own (per-day pricing off) prices at
-      // the event's own rate instead of silently coming out as 0.
-      const priced = await getCurrentPriceForProduct(session.productId || event.productId, { isMember });
-      amount += priced.amount || 0;
-      currency = priced.currency || currency;
+      // A session with no price/tiers of its own (per-day pricing off, or
+      // this particular day left at the event's default) prices at the
+      // event's own rate instead of silently coming out as 0.
+      const hasOwnPricing =
+        session.memberPrice != null ||
+        session.nonMemberPrice != null ||
+        (Array.isArray(session.pricingTiers) && session.pricingTiers.length > 0);
+      const priceEntity = hasOwnPricing ? session : event;
+      const unitPriceEuros = resolveUnitPriceForEntity({
+        entity: priceEntity,
+        entityLabel: session.label || event.title,
+        isMember,
+        priceCategory,
+        quantity,
+        now,
+      });
+      amount += Math.round(unitPriceEuros * 100);
     }
     return {
       amount: amount * quantity,
-      currency,
+      currency: "eur",
       productCode: event.productCode || null,
       eventCategoryCode: event.eventCategoryLookupCode || null,
     };
   }
 
-  const { amount, currency } = await getCurrentPriceForProduct(event.productId, { isMember });
+  const unitPriceEuros = resolveUnitPriceForEntity({
+    entity: event,
+    entityLabel: event.title,
+    isMember,
+    priceCategory,
+    quantity,
+    now,
+  });
   return {
-    amount: amount * quantity,
-    currency,
+    amount: Math.round(unitPriceEuros * 100) * quantity,
+    currency: "eur",
     productCode: event.productCode || null,
     eventCategoryCode: event.eventCategoryLookupCode || null,
   };
@@ -91,6 +158,7 @@ async function createRegistration(req, res, next) {
       registeredVia,
       registeredByUserId,
       quantity,
+      priceCategory,
     } = req.body || {};
 
     if (!registrationType || !["event", "course"].includes(registrationType)) {
@@ -112,6 +180,11 @@ async function createRegistration(req, res, next) {
     const seatQuantity = quantity != null ? Number(quantity) : 1;
     if (!Number.isInteger(seatQuantity) || seatQuantity < 1) {
       return next(AppError.badRequest("quantity must be a positive integer"));
+    }
+
+    const seatPriceCategory = priceCategory || "standard";
+    if (!["standard", "student", "group_student"].includes(seatPriceCategory)) {
+      return next(AppError.badRequest("priceCategory must be 'standard', 'student' or 'group_student'"));
     }
 
     // 1. Enforce seat capacity, if the event/session(s) declare one, before
@@ -169,6 +242,7 @@ async function createRegistration(req, res, next) {
       courseId,
       sessionIds,
       isMember,
+      priceCategory: seatPriceCategory,
       quantity: seatQuantity,
     });
 
@@ -184,6 +258,7 @@ async function createRegistration(req, res, next) {
       courseId: registrationType === "course" ? courseId : null,
       sessionIds: sessionIds || [],
       quantity: seatQuantity,
+      priceCategory: seatPriceCategory,
       profileId,
       membershipNumber,
       isMemberAtRegistration: isMember,

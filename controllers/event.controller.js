@@ -18,6 +18,38 @@ async function resolveEventCategoryLookupCode(eventCategoryLookupId, req, tenant
   return resolved?.code || null;
 }
 
+const VALID_TIER_TYPES = ["EARLY_BIRD_MEMBER", "EARLY_BIRD_NON_MEMBER", "STUDENT", "GROUP_STUDENT"];
+
+// Validates an optional pricingTiers array on an Event or EventSession
+// payload - throws AppError.badRequest on any violation. At most one active
+// tier per type is allowed so price resolution stays deterministic.
+function validatePricingTiers(pricingTiers) {
+  if (pricingTiers == null) return;
+  if (!Array.isArray(pricingTiers)) {
+    throw AppError.badRequest("pricingTiers must be an array");
+  }
+  const seenTypes = new Set();
+  for (const tier of pricingTiers) {
+    if (!VALID_TIER_TYPES.includes(tier?.tierType)) {
+      throw AppError.badRequest(`Invalid pricingTiers.tierType: ${tier?.tierType}`);
+    }
+    if (tier.isActive === false) continue;
+    if (seenTypes.has(tier.tierType)) {
+      throw AppError.badRequest(`Only one active ${tier.tierType} tier is allowed`);
+    }
+    seenTypes.add(tier.tierType);
+    if (typeof tier.price !== "number" || Number.isNaN(tier.price) || tier.price < 0) {
+      throw AppError.badRequest(`${tier.tierType} price must be a number of 0 or more`);
+    }
+    if (["EARLY_BIRD_MEMBER", "EARLY_BIRD_NON_MEMBER"].includes(tier.tierType) && !tier.cutoffDate) {
+      throw AppError.badRequest(`${tier.tierType} requires a cutoffDate`);
+    }
+    if (tier.tierType === "GROUP_STUDENT" && (!tier.minGroupSize || tier.minGroupSize < 2)) {
+      throw AppError.badRequest("GROUP_STUDENT requires minGroupSize of 2 or more");
+    }
+  }
+}
+
 async function listEvents(req, res, next) {
   try {
     const { tenantId } = req.ctx;
@@ -115,6 +147,7 @@ async function createEvent(req, res, next) {
       eventTypeId,
       memberPrice,
       nonMemberPrice,
+      pricingTiers,
       venueId,
       venue,
       isVirtual,
@@ -164,6 +197,12 @@ async function createEvent(req, res, next) {
       return next(AppError.badRequest(resolveError.message));
     }
 
+    try {
+      validatePricingTiers(pricingTiers);
+    } catch (validationError) {
+      return next(validationError);
+    }
+
     let event = await Event.create({
       tenantId,
       title,
@@ -177,6 +216,7 @@ async function createEvent(req, res, next) {
       eventTypeId,
       memberPrice,
       nonMemberPrice,
+      pricingTiers,
       venueId,
       venue,
       isVirtual,
@@ -246,6 +286,14 @@ async function updateEvent(req, res, next) {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(body, "pricingTiers")) {
+      try {
+        validatePricingTiers(body.pricingTiers);
+      } catch (validationError) {
+        return next(validationError);
+      }
+    }
+
     const event = await Event.findOneAndUpdate(
       { _id: req.params.id, tenantId, isDeleted: { $ne: true } },
       { $set: { ...body, updatedBy: userId, updatedByEmail: req.user?.email || null } },
@@ -304,9 +352,16 @@ async function addSession(req, res, next) {
       capacity,
       memberPrice,
       nonMemberPrice,
+      pricingTiers,
     } = req.body || {};
     if (!label || !date) {
       return next(AppError.badRequest("label and date are required"));
+    }
+
+    try {
+      validatePricingTiers(pricingTiers);
+    } catch (validationError) {
+      return next(validationError);
     }
 
     const session = await EventSession.create({
@@ -322,6 +377,7 @@ async function addSession(req, res, next) {
       capacity,
       memberPrice,
       nonMemberPrice,
+      pricingTiers,
       createdBy: userId,
       updatedBy: userId,
     });
@@ -343,6 +399,15 @@ async function updateSession(req, res, next) {
     if (!event) return next(AppError.notFound("Event not found"));
 
     const body = req.body || {};
+
+    if (Object.prototype.hasOwnProperty.call(body, "pricingTiers")) {
+      try {
+        validatePricingTiers(body.pricingTiers);
+      } catch (validationError) {
+        return next(validationError);
+      }
+    }
+
     // Caller is explicitly clearing this session's own price (e.g. switching
     // a multi-day event from per-day pricing back to a single event price) -
     // also drop its stale productId/productCode, if any were previously set.
@@ -355,6 +420,13 @@ async function updateSession(req, res, next) {
     if (clearingSessionPrice) {
       updateSet.productId = null;
       updateSet.productCode = null;
+      // Don't let a stale pricingTiers array survive a price clear (it would
+      // make resolveAmount() treat this session as still having its own
+      // pricing) - unless the caller is deliberately setting tiers in this
+      // same request.
+      if (!Object.prototype.hasOwnProperty.call(body, "pricingTiers")) {
+        updateSet.pricingTiers = [];
+      }
     }
 
     const session = await EventSession.findOneAndUpdate(

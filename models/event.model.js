@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { PricingTierSchema } = require("./pricingTier.schema.js");
 
 const EventSchema = new mongoose.Schema(
   {
@@ -23,6 +24,10 @@ const EventSchema = new mongoose.Schema(
     eventTypeId: { type: String, default: null }, // ref into user-service Lookup ("Event Type")
     memberPrice: { type: Number, default: null },
     nonMemberPrice: { type: Number, default: null },
+    // Optional additional pricing tiers (early bird, student, group student).
+    // See pricingTier.schema.js. Absent/empty means only the base member/
+    // non-member prices above apply, identical to pre-tier behavior.
+    pricingTiers: { type: [PricingTierSchema], default: [] },
     venueId: { type: String, default: null }, // ref into user-service Lookup ("Venue")
     venue: { type: String, default: null }, // display string: venue name + address
     isVirtual: { type: Boolean, default: false },
