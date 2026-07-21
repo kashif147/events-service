@@ -9,6 +9,16 @@ const { resolveEventCategoryLookup } = require("../services/lookup.client.js");
 
 const PUBLISHED_LOCKED_STATUS_TARGETS = ["Cancelled", "Completed"];
 
+// productId/productCode are internal linkage fields into user-service's
+// Product record (used for GL/finance mapping and payment amount
+// resolution) - strip them from anything sent back to the client.
+function omitProductFields(doc) {
+  if (!doc) return doc;
+  const plain = typeof doc.toObject === "function" ? doc.toObject() : doc;
+  const { productId, productCode, ...rest } = plain;
+  return rest;
+}
+
 // Never trust a client-supplied eventCategoryLookupCode - always re-resolve it
 // server-side from eventCategoryLookupId against user-service's live Lookup
 // data, mirroring how eventCategoryProductTypeId's code is derived elsewhere.
@@ -68,7 +78,7 @@ async function listEvents(req, res, next) {
     if (q) filter.title = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
 
     const events = await Event.find(filter).sort({ startDate: 1 }).lean();
-    return res.status(200).json({ success: true, data: events });
+    return res.status(200).json({ success: true, data: events.map(omitProductFields) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to list events"));
   }
@@ -120,13 +130,13 @@ async function getEventById(req, res, next) {
 
     const { eventTotal, bySession } = await getSeatsBookedMap({ tenantId, eventId: event._id });
     const sessionsWithSeats = sessions.map((session) => ({
-      ...session,
+      ...omitProductFields(session),
       seatsBooked: bySession.get(String(session._id)) || 0,
     }));
 
     return res.status(200).json({
       success: true,
-      data: { ...event, seatsBooked: eventTotal, sessions: sessionsWithSeats },
+      data: { ...omitProductFields(event), seatsBooked: eventTotal, sessions: sessionsWithSeats },
     });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to fetch event"));
@@ -240,7 +250,7 @@ async function createEvent(req, res, next) {
       updatedByEmail: req.user?.email || null,
     });
 
-    return res.status(201).json({ success: true, data: event });
+    return res.status(201).json({ success: true, data: omitProductFields(event) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to create event"));
   }
@@ -301,7 +311,7 @@ async function updateEvent(req, res, next) {
     );
     if (!event) return next(AppError.notFound("Event not found"));
 
-    return res.status(200).json({ success: true, data: event });
+    return res.status(200).json({ success: true, data: omitProductFields(event) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to update event"));
   }
@@ -382,7 +392,7 @@ async function addSession(req, res, next) {
       updatedBy: userId,
     });
 
-    return res.status(201).json({ success: true, data: session });
+    return res.status(201).json({ success: true, data: omitProductFields(session) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to add session"));
   }
@@ -441,7 +451,7 @@ async function updateSession(req, res, next) {
     );
     if (!session) return next(AppError.notFound("Session not found"));
 
-    return res.status(200).json({ success: true, data: session });
+    return res.status(200).json({ success: true, data: omitProductFields(session) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to update session"));
   }
@@ -461,7 +471,7 @@ async function deleteSession(req, res, next) {
       { new: true },
     );
     if (!session) return next(AppError.notFound("Session not found"));
-    return res.status(200).json({ success: true, data: session });
+    return res.status(200).json({ success: true, data: omitProductFields(session) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to delete session"));
   }
