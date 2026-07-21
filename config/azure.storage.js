@@ -1,6 +1,8 @@
 const {
   BlobServiceClient,
   StorageSharedKeyCredential,
+  generateBlobSASQueryParameters,
+  BlobSASPermissions,
 } = require("@azure/storage-blob");
 
 const connectionString = (process.env.AZURE_STORAGE_CONNECTION_STRING || "")
@@ -24,6 +26,13 @@ if (connectionString) {
   blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
   const nameMatch = connectionString.match(/AccountName=([^;]+)/);
   resolvedAccountName = nameMatch ? nameMatch[1].trim() : accountName;
+  const keyMatch = connectionString.match(/AccountKey=([^;]+)/);
+  if (keyMatch && keyMatch[1]) {
+    sharedKeyCredential = new StorageSharedKeyCredential(
+      resolvedAccountName,
+      keyMatch[1].trim()
+    );
+  }
 } else if (accountName && accountKey) {
   sharedKeyCredential = new StorageSharedKeyCredential(accountName, accountKey);
   blobServiceClient = new BlobServiceClient(
@@ -36,7 +45,10 @@ const isConfigured = Boolean(blobServiceClient && containerName);
 
 module.exports = {
   blobServiceClient,
+  sharedKeyCredential,
   containerName,
   accountName: resolvedAccountName,
   isConfigured,
+  generateBlobSASQueryParameters,
+  BlobSASPermissions,
 };

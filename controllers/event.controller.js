@@ -424,12 +424,16 @@ async function uploadEventImage(req, res, next) {
     const safeExt = ["png", "jpg", "jpeg", "webp", "gif"].includes(ext) ? ext : "png";
     const blobPath = `${tenantId}/${eventKey}-${crypto.randomUUID()}.${safeExt}`;
 
-    const url = await azureBlob.uploadToBlob(
+    await azureBlob.uploadToBlob(
       blobPath,
       req.file.buffer,
       req.file.mimetype,
       sanitizeFilename(req.file.originalname),
     );
+    // The storage account has anonymous public access disabled, so the bare
+    // blob URL 404s in a browser <img> tag - hand back a long-lived SAS URL
+    // instead, which is what actually gets persisted as Event.imageUrl.
+    const url = azureBlob.getLongLivedReadUrl(blobPath);
 
     return res.status(200).json({ success: true, data: { url } });
   } catch (error) {
