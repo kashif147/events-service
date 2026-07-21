@@ -1,5 +1,7 @@
+const crypto = require("crypto");
 const mongoose = require("mongoose");
 const Event = require("../models/event.model.js");
+const azureBlob = require("../services/azure.blob.service.js");
 const EventSession = require("../models/eventSession.model.js");
 const Registration = require("../models/registration.model.js");
 const { AppError } = require("../errors/AppError.js");
@@ -142,6 +144,7 @@ async function createEvent(req, res, next) {
       venueId,
       venue,
       isVirtual,
+      imageUrl,
       startDate,
       endDate,
       capacity,
@@ -190,6 +193,7 @@ async function createEvent(req, res, next) {
       venueId,
       venue,
       isVirtual,
+      imageUrl,
       startDate,
       endDate,
       capacity,
@@ -469,6 +473,48 @@ async function deleteSession(req, res, next) {
   }
 }
 
+const sanitizeFilename = (name) =>
+  (name || "image")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 120) || "image";
+
+// Event id is optional here - the image can be picked before the event is
+// first saved (create flow), so an unsaved event uploads under "draft" and
+// the resulting URL rides along in the create payload like any other field.
+async function uploadEventImage(req, res, next) {
+  try {
+    const { tenantId } = req.ctx;
+
+    if (!req.file?.buffer) {
+      return next(AppError.badRequest("Image file is required"));
+    }
+    if (!azureBlob.isConfigured) {
+      return next(
+        AppError.internalServerError(
+          "Azure Storage is not configured. Set AZURE_STORAGE_CONNECTION_STRING or AZURE_STORAGE_ACCOUNT and AZURE_STORAGE_KEY.",
+        ),
+      );
+    }
+
+    const eventKey = req.params.id && req.params.id !== "draft" ? req.params.id : "draft";
+    const ext = req.file.originalname?.split(".").pop()?.toLowerCase() || "png";
+    const safeExt = ["png", "jpg", "jpeg", "webp", "gif"].includes(ext) ? ext : "png";
+    const blobPath = `${tenantId}/${eventKey}-${crypto.randomUUID()}.${safeExt}`;
+
+    const url = await azureBlob.uploadToBlob(
+      blobPath,
+      req.file.buffer,
+      req.file.mimetype,
+      sanitizeFilename(req.file.originalname),
+    );
+
+    return res.status(200).json({ success: true, data: { url } });
+  } catch (error) {
+    return next(AppError.internalServerError(error.message || "Failed to upload event image"));
+  }
+}
+
 module.exports = {
   listEvents,
   getEventById,
@@ -478,4 +524,5 @@ module.exports = {
   addSession,
   updateSession,
   deleteSession,
+  uploadEventImage,
 };

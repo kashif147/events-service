@@ -20,6 +20,7 @@ const EventSchema = new mongoose.Schema(
     venueId: { type: String, default: null }, // ref into user-service Lookup ("Venue")
     venue: { type: String, default: null }, // display string: venue name + address
     isVirtual: { type: Boolean, default: false },
+    imageUrl: { type: String, default: null },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
     capacity: { type: Number, default: null },

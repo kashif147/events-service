@@ -25,6 +25,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@azure/storage-blob": "^12.31.0",
     "@membership/policy-middleware": "git+https://github.com/kashif147/policy-middleware.git#gateway",
     "@projectShell/logging-lib": "git+https://github.com/kashif147/logging-lib.git#main",
     "@projectShell/rabbitmq-middleware": "git+https://github.com/kashif147/rabbitmq-middleware.git#main",
@@ -36,7 +37,8 @@
     "express-session": "^1.17.3",
     "http-errors": "^2.0.0",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.0.3"
+    "mongoose": "^8.0.3",
+    "multer": "^1.4.5-lts.1"
   },
   "devDependencies": {
     "debug": "^4.3.4",
