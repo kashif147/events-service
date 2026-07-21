@@ -21,7 +21,9 @@ async function resolveAmount({ tenantId, registrationType, eventId, courseId, se
     const course = await Course.findOne({ _id: courseId, tenantId }).lean();
     if (!course) throw AppError.notFound("Course not found");
     const { amount, currency } = await getCurrentPriceForProduct(course.productId, { isMember });
-    return { amount: amount * quantity, currency, productCode: course.productCode || null };
+    // Courses have no Event Category equivalent yet - account-service falls
+    // back to its default GL income code when eventCategoryCode is null.
+    return { amount: amount * quantity, currency, productCode: course.productCode || null, eventCategoryCode: null };
   }
 
   const event = await Event.findOne({ _id: eventId, tenantId }).lean();
@@ -42,11 +44,21 @@ async function resolveAmount({ tenantId, registrationType, eventId, courseId, se
       amount += priced.amount || 0;
       currency = priced.currency || currency;
     }
-    return { amount: amount * quantity, currency, productCode: event.productCode || null };
+    return {
+      amount: amount * quantity,
+      currency,
+      productCode: event.productCode || null,
+      eventCategoryCode: event.eventCategoryLookupCode || null,
+    };
   }
 
   const { amount, currency } = await getCurrentPriceForProduct(event.productId, { isMember });
-  return { amount: amount * quantity, currency, productCode: event.productCode || null };
+  return {
+    amount: amount * quantity,
+    currency,
+    productCode: event.productCode || null,
+    eventCategoryCode: event.eventCategoryLookupCode || null,
+  };
 }
 
 /** Sum seats already booked (active registrations) for an event or a specific session within it. */
@@ -150,7 +162,7 @@ async function createRegistration(req, res, next) {
     const isMember = !!membershipNumber;
 
     // 3. Price the registration.
-    const { amount, currency, productCode } = await resolveAmount({
+    const { amount, currency, productCode, eventCategoryCode } = await resolveAmount({
       tenantId,
       registrationType,
       eventId,
@@ -206,6 +218,7 @@ async function createRegistration(req, res, next) {
         amount,
         currency,
         productCode,
+        eventCategoryCode,
         purpose: registrationType === "course" ? "courseRegistration" : "eventRegistration",
       });
       registration.paymentId = intent?.paymentId || null;
@@ -219,6 +232,7 @@ async function createRegistration(req, res, next) {
         profileId,
         membershipNumber,
         productCode,
+        eventCategoryCode,
         amount,
         currency,
         method,

@@ -47,6 +47,7 @@ async function createRegistrationPaymentIntent({
   profileId,
   membershipNumber,
   productCode,
+  eventCategoryCode,
   amount,
   currency,
   purpose,
@@ -62,6 +63,9 @@ async function createRegistrationPaymentIntent({
       // still marks it as "events" revenue, not membership revenue).
       ...(membershipNumber ? { memberId: membershipNumber } : {}),
       productCode,
+      // Event Category code (CPD | EVENT) - lets account-service resolve the
+      // GL income account directly, decoupled from the synced Product record.
+      eventCategoryCode,
       amount,
       currency,
       purpose, // "eventRegistration" | "courseRegistration"
@@ -86,6 +90,7 @@ async function postManualRegistrationPayment({
   profileId,
   membershipNumber,
   productCode,
+  eventCategoryCode,
   amount,
   currency,
   method, // "comp" | "manual" | "invoice"
@@ -98,6 +103,7 @@ async function postManualRegistrationPayment({
       profileId,
       ...(membershipNumber ? { memberId: membershipNumber } : {}),
       productCode,
+      eventCategoryCode,
       amount,
       currency,
       method,

@@ -5,44 +5,17 @@ const azureBlob = require("../services/azure.blob.service.js");
 const EventSession = require("../models/eventSession.model.js");
 const Registration = require("../models/registration.model.js");
 const { AppError } = require("../errors/AppError.js");
-const { ensureEventProductLink, syncEventProductLink } = require("../services/eventProductLink.service.js");
-const {
-  ensureEventSessionProductLink,
-  syncEventSessionProductLink,
-} = require("../services/eventSessionProductLink.service.js");
-const bizLogger = require("../config/bizLogger.js");
-
-const PRODUCT_SYNC_TRIGGER_FIELDS = [
-  "memberPrice",
-  "nonMemberPrice",
-  "startDate",
-  "endDate",
-  "eventCategoryCode",
-  "eventCategoryProductTypeId",
-  "description",
-];
-
-const SESSION_PRODUCT_SYNC_TRIGGER_FIELDS = ["memberPrice", "nonMemberPrice", "date"];
+const { resolveEventCategoryLookup } = require("../services/lookup.client.js");
 
 const PUBLISHED_LOCKED_STATUS_TARGETS = ["Cancelled", "Completed"];
 
-// Logging must never be able to turn a "the event saved fine, just the
-// optional Product/Pricing link failed" outcome into a false 500 - a broken
-// logger call previously escaped its catch block and did exactly that.
-function safeLogError(message, meta) {
-  try {
-    bizLogger.error(message, meta);
-  } catch (_loggingError) {
-    // Swallow - logging failures must never affect the response.
-  }
-}
-
-// Axios errors' own .message is a generic "Request failed with status code
-// 400" - the useful reason is nested in the downstream service's AppError
-// response envelope. Surface that instead so the warning is self-diagnosable
-// without needing server log access.
-function extractLinkErrorMessage(error) {
-  return error?.response?.data?.error?.message || error?.message || "Unknown error";
+// Never trust a client-supplied eventCategoryLookupCode - always re-resolve it
+// server-side from eventCategoryLookupId against user-service's live Lookup
+// data, mirroring how eventCategoryProductTypeId's code is derived elsewhere.
+async function resolveEventCategoryLookupCode(eventCategoryLookupId, req, tenantId) {
+  if (!eventCategoryLookupId) return null;
+  const resolved = await resolveEventCategoryLookup(eventCategoryLookupId, req, tenantId);
+  return resolved?.code || null;
 }
 
 async function listEvents(req, res, next) {
@@ -138,6 +111,7 @@ async function createEvent(req, res, next) {
       productCode,
       eventCategoryCode,
       eventCategoryProductTypeId,
+      eventCategoryLookupId,
       eventTypeId,
       memberPrice,
       nonMemberPrice,
@@ -163,8 +137,8 @@ async function createEvent(req, res, next) {
     if (!title || !startDate || !endDate) {
       return next(AppError.badRequest("title, startDate and endDate are required"));
     }
-    if (!eventCategoryProductTypeId) {
-      return next(AppError.badRequest("eventCategoryProductTypeId is required"));
+    if (!eventCategoryLookupId) {
+      return next(AppError.badRequest("eventCategoryLookupId is required"));
     }
     if (!venueId) {
       return next(AppError.badRequest("venueId is required"));
@@ -179,6 +153,17 @@ async function createEvent(req, res, next) {
       return next(AppError.badRequest("refundPolicyDays must be a number of 0 or more"));
     }
 
+    let eventCategoryLookupCode;
+    try {
+      eventCategoryLookupCode = await resolveEventCategoryLookupCode(
+        eventCategoryLookupId,
+        req,
+        tenantId,
+      );
+    } catch (resolveError) {
+      return next(AppError.badRequest(resolveError.message));
+    }
+
     let event = await Event.create({
       tenantId,
       title,
@@ -187,6 +172,8 @@ async function createEvent(req, res, next) {
       productCode,
       eventCategoryCode,
       eventCategoryProductTypeId,
+      eventCategoryLookupId: eventCategoryLookupId || null,
+      eventCategoryLookupCode,
       eventTypeId,
       memberPrice,
       nonMemberPrice,
@@ -213,22 +200,7 @@ async function createEvent(req, res, next) {
       updatedByEmail: req.user?.email || null,
     });
 
-    let warning;
-    if (eventCategoryProductTypeId && memberPrice != null && nonMemberPrice != null) {
-      try {
-        const link = await ensureEventProductLink(event, req, tenantId);
-        event = await Event.findByIdAndUpdate(event._id, { $set: link }, { new: true });
-      } catch (linkError) {
-        const reason = extractLinkErrorMessage(linkError);
-        safeLogError("Failed to auto-link Product/Pricing for new event", {
-          eventId: event._id,
-          error: reason,
-        });
-        warning = `Product/pricing link failed: ${reason} — link manually in Product Management`;
-      }
-    }
-
-    return res.status(201).json({ success: true, data: event, ...(warning ? { warning } : {}) });
+    return res.status(201).json({ success: true, data: event });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to create event"));
   }
@@ -262,36 +234,26 @@ async function updateEvent(req, res, next) {
       }
     }
 
-    let event = await Event.findOneAndUpdate(
+    if (Object.prototype.hasOwnProperty.call(body, "eventCategoryLookupId")) {
+      try {
+        body.eventCategoryLookupCode = await resolveEventCategoryLookupCode(
+          body.eventCategoryLookupId,
+          req,
+          tenantId,
+        );
+      } catch (resolveError) {
+        return next(AppError.badRequest(resolveError.message));
+      }
+    }
+
+    const event = await Event.findOneAndUpdate(
       { _id: req.params.id, tenantId, isDeleted: { $ne: true } },
       { $set: { ...body, updatedBy: userId, updatedByEmail: req.user?.email || null } },
       { new: true, runValidators: true },
     );
     if (!event) return next(AppError.notFound("Event not found"));
 
-    let warning;
-    const shouldSyncProduct = PRODUCT_SYNC_TRIGGER_FIELDS.some((field) =>
-      Object.prototype.hasOwnProperty.call(body, field),
-    );
-    if (shouldSyncProduct && event.eventCategoryProductTypeId && event.memberPrice != null && event.nonMemberPrice != null) {
-      try {
-        if (!event.productId) {
-          const link = await ensureEventProductLink(event, req, tenantId);
-          event = await Event.findByIdAndUpdate(event._id, { $set: link }, { new: true });
-        } else {
-          await syncEventProductLink(event, req, tenantId);
-        }
-      } catch (linkError) {
-        const reason = extractLinkErrorMessage(linkError);
-        safeLogError("Failed to sync Product/Pricing for updated event", {
-          eventId: event._id,
-          error: reason,
-        });
-        warning = `Product/pricing sync failed: ${reason} — update manually in Product Management`;
-      }
-    }
-
-    return res.status(200).json({ success: true, data: event, ...(warning ? { warning } : {}) });
+    return res.status(200).json({ success: true, data: event });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to update event"));
   }
@@ -347,7 +309,7 @@ async function addSession(req, res, next) {
       return next(AppError.badRequest("label and date are required"));
     }
 
-    let session = await EventSession.create({
+    const session = await EventSession.create({
       tenantId,
       eventId: event._id,
       label,
@@ -364,23 +326,7 @@ async function addSession(req, res, next) {
       updatedBy: userId,
     });
 
-    let warning;
-    if (event.eventCategoryProductTypeId && memberPrice != null && nonMemberPrice != null) {
-      try {
-        const link = await ensureEventSessionProductLink(session, event, req, tenantId);
-        session = await EventSession.findByIdAndUpdate(session._id, { $set: link }, { new: true });
-      } catch (linkError) {
-        const reason = extractLinkErrorMessage(linkError);
-        safeLogError("Failed to auto-link Product/Pricing for new session", {
-          sessionId: session._id,
-          eventId: event._id,
-          error: reason,
-        });
-        warning = `Product/pricing link failed: ${reason} — link manually in Product Management`;
-      }
-    }
-
-    return res.status(201).json({ success: true, data: session, ...(warning ? { warning } : {}) });
+    return res.status(201).json({ success: true, data: session });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to add session"));
   }
@@ -399,8 +345,7 @@ async function updateSession(req, res, next) {
     const body = req.body || {};
     // Caller is explicitly clearing this session's own price (e.g. switching
     // a multi-day event from per-day pricing back to a single event price) -
-    // also drop its Product/Pricing link so a stale productId can't keep
-    // charging the old per-day amount once the per-session price is gone.
+    // also drop its stale productId/productCode, if any were previously set.
     const clearingSessionPrice =
       Object.prototype.hasOwnProperty.call(body, "memberPrice") &&
       body.memberPrice == null &&
@@ -412,7 +357,7 @@ async function updateSession(req, res, next) {
       updateSet.productCode = null;
     }
 
-    let session = await EventSession.findOneAndUpdate(
+    const session = await EventSession.findOneAndUpdate(
       {
         _id: req.params.sessionId,
         eventId: req.params.id,
@@ -424,30 +369,7 @@ async function updateSession(req, res, next) {
     );
     if (!session) return next(AppError.notFound("Session not found"));
 
-    let warning;
-    const shouldSyncProduct = SESSION_PRODUCT_SYNC_TRIGGER_FIELDS.some((field) =>
-      Object.prototype.hasOwnProperty.call(body, field),
-    );
-    if (shouldSyncProduct && event.eventCategoryProductTypeId && session.memberPrice != null && session.nonMemberPrice != null) {
-      try {
-        if (!session.productId) {
-          const link = await ensureEventSessionProductLink(session, event, req, tenantId);
-          session = await EventSession.findByIdAndUpdate(session._id, { $set: link }, { new: true });
-        } else {
-          await syncEventSessionProductLink(session, event, req, tenantId);
-        }
-      } catch (linkError) {
-        const reason = extractLinkErrorMessage(linkError);
-        safeLogError("Failed to sync Product/Pricing for updated session", {
-          sessionId: session._id,
-          eventId: event._id,
-          error: reason,
-        });
-        warning = `Product/pricing sync failed: ${reason} — update manually in Product Management`;
-      }
-    }
-
-    return res.status(200).json({ success: true, data: session, ...(warning ? { warning } : {}) });
+    return res.status(200).json({ success: true, data: session });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to update session"));
   }

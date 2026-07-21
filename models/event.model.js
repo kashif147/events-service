@@ -14,6 +14,12 @@ const EventSchema = new mongoose.Schema(
     // That ProductType's own `code` at selection time - kept for display and
     // for mapping to the correct GL income account, without a re-lookup.
     eventCategoryCode: { type: String, default: null },
+    // Decoupled Event Category: ref into user-service Lookup under LookupType
+    // "Event Category" (code EVTCAT) - e.g. CPD / EVENT. Coexists with
+    // eventCategoryProductTypeId/eventCategoryCode above during migration;
+    // this is the target-state field for GL mapping and Event Type filtering.
+    eventCategoryLookupId: { type: String, default: null },
+    eventCategoryLookupCode: { type: String, default: null }, // "CPD" | "EVENT"
     eventTypeId: { type: String, default: null }, // ref into user-service Lookup ("Event Type")
     memberPrice: { type: Number, default: null },
     nonMemberPrice: { type: Number, default: null },
