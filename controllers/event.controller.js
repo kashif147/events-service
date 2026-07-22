@@ -6,6 +6,11 @@ const EventSession = require("../models/eventSession.model.js");
 const Registration = require("../models/registration.model.js");
 const { AppError } = require("../errors/AppError.js");
 const { resolveEventCategoryLookup } = require("../services/lookup.client.js");
+const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
+const {
+  determinePriceCategory,
+  resolveUnitPriceForEntity,
+} = require("../services/pricingResolution.service.js");
 
 const PUBLISHED_LOCKED_STATUS_TARGETS = ["Cancelled", "Completed"];
 
@@ -140,6 +145,69 @@ async function getEventById(req, res, next) {
     });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to fetch event"));
+  }
+}
+
+// Live price quote for the CRM/portal registration UI - resolves the exact
+// same rules createRegistration uses (via pricingResolution.service.js), so
+// what's shown here always matches what's actually charged. profileId is
+// optional (a new/unlinked attendee quotes as a non-member).
+async function getEventPriceQuote(req, res, next) {
+  try {
+    const { tenantId } = req.ctx;
+    const { profileId } = req.query;
+    const quantity = req.query.quantity != null ? Number(req.query.quantity) : 1;
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      return next(AppError.badRequest("quantity must be a positive integer"));
+    }
+
+    const event = await Event.findOne({
+      _id: req.params.id,
+      tenantId,
+      isDeleted: { $ne: true },
+    }).lean();
+    if (!event) return next(AppError.notFound("Event not found"));
+
+    const { isActiveMember, membershipCategory } = await getActiveMembership({
+      profileId: profileId || null,
+      tenantId,
+      req,
+    });
+
+    const priceCategory = determinePriceCategory({
+      isActiveMember,
+      membershipCategory,
+      quantity,
+      entity: event,
+    });
+    const { price: unitPrice, appliedTier } = resolveUnitPriceForEntity({
+      entity: event,
+      entityLabel: event.title,
+      isMember: isActiveMember,
+      priceCategory,
+      quantity,
+      now: new Date(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        isActiveMember,
+        membershipCategory,
+        priceCategory,
+        appliedTier,
+        unitPrice,
+        quantity,
+        totalAmount: unitPrice * quantity,
+        currency: "eur",
+        memberPrice: event.memberPrice,
+        nonMemberPrice: event.nonMemberPrice,
+        pricingTiers: event.pricingTiers || [],
+      },
+    });
+  } catch (error) {
+    if (error instanceof AppError) return next(error);
+    return next(AppError.internalServerError(error.message || "Failed to compute price quote"));
   }
 }
 
@@ -526,6 +594,7 @@ async function uploadEventImage(req, res, next) {
 module.exports = {
   listEvents,
   getEventById,
+  getEventPriceQuote,
   createEvent,
   updateEvent,
   softDeleteEvent,

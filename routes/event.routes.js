@@ -6,6 +6,11 @@ const { eventImageUploadMw } = require("../middlewares/upload.mw.js");
 
 router.get("/", defaultPolicyMiddleware.requirePermission("events", "read"), eventController.listEvents);
 router.get("/:id", defaultPolicyMiddleware.requirePermission("events", "read"), eventController.getEventById);
+router.get(
+  "/:id/price-quote",
+  defaultPolicyMiddleware.requirePermission("events", "read"),
+  eventController.getEventPriceQuote,
+);
 router.post("/", defaultPolicyMiddleware.requirePermission("events", "create"), eventController.createEvent);
 router.put("/:id", defaultPolicyMiddleware.requirePermission("events", "write"), eventController.updateEvent);
 router.delete("/:id", defaultPolicyMiddleware.requirePermission("events", "write"), eventController.softDeleteEvent);

@@ -22,6 +22,11 @@ router.post(
   defaultPolicyMiddleware.requirePermission("events", "create"),
   registrationController.createRegistration,
 );
+router.post(
+  "/attendee-duplicate-check",
+  defaultPolicyMiddleware.requirePermission("events", "create"),
+  registrationController.checkNewAttendeeDuplicates,
+);
 router.put(
   "/:id/cancel",
   defaultPolicyMiddleware.requirePermission("events", "write"),

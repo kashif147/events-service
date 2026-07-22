@@ -31,4 +31,26 @@ async function findOrCreateAttendeeProfile({
   return response.data?.data;
 }
 
-module.exports = { findOrCreateAttendeeProfile };
+/**
+ * Read-only duplicate check for a would-be new attendee, run before
+ * registering them - never creates a Profile. See profile-service's
+ * attendeeProfileLookup.helper.js's checkAttendeeDuplicates for the
+ * exact/review/none resolution semantics.
+ */
+async function checkAttendeeDuplicates({ tenantId, email, firstName, lastName, phone }) {
+  const response = await axios.post(
+    `${PROFILE_SERVICE_URL}/api/profile/internal/attendee-duplicate-check`,
+    { tenantId, email, firstName, lastName, phone },
+    {
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-request": "true",
+        "x-tenant-id": tenantId || "",
+      },
+      timeout: 15000,
+    },
+  );
+  return response.data?.data;
+}
+
+module.exports = { findOrCreateAttendeeProfile, checkAttendeeDuplicates };
