@@ -151,4 +151,90 @@ async function resolveAmount({
   };
 }
 
-module.exports = { resolveUnitPriceForEntity, determinePriceCategory, resolveAmount };
+/**
+ * Resolve the per-unit price (in euros) for one explicit tier key, directly
+ * against the event's own configured prices/tiers - no membership-based
+ * auto-detection. Used by the CRM's multi-tier lineItems flow, where the
+ * operator chooses which of the event's own trusted prices to apply to how
+ * many seats, rather than inventing a number.
+ */
+function resolvePriceForTierKey({ entity, entityLabel, tierKey, quantity, now }) {
+  const tiers = Array.isArray(entity.pricingTiers) ? entity.pricingTiers : [];
+  const activeTierOfType = (tierType) =>
+    tiers.find((t) => t.tierType === tierType && t.isActive !== false);
+
+  if (tierKey === "MEMBER") return entity.memberPrice || 0;
+  if (tierKey === "NON_MEMBER") return entity.nonMemberPrice || 0;
+
+  if (tierKey === "EARLY_BIRD_MEMBER" || tierKey === "EARLY_BIRD_NON_MEMBER") {
+    const tier = activeTierOfType(tierKey);
+    if (!tier) throw AppError.badRequest(`${tierKey} pricing is not available for ${entityLabel}`);
+    if (!tier.cutoffDate || now > new Date(tier.cutoffDate)) {
+      throw AppError.badRequest(`${tierKey} pricing for ${entityLabel} has expired`);
+    }
+    return tier.price;
+  }
+
+  if (tierKey === "STUDENT") {
+    const tier = activeTierOfType("STUDENT");
+    if (!tier) throw AppError.badRequest(`Student pricing is not available for ${entityLabel}`);
+    return tier.price;
+  }
+
+  if (tierKey === "GROUP_STUDENT") {
+    const tier = activeTierOfType("GROUP_STUDENT");
+    if (!tier) throw AppError.badRequest(`Group student pricing is not available for ${entityLabel}`);
+    const minSize = tier.minGroupSize || 2;
+    if (quantity < minSize) {
+      throw AppError.badRequest(
+        `Group student pricing for ${entityLabel} requires at least ${minSize} ticket(s) in this line (you have ${quantity})`,
+      );
+    }
+    return tier.price;
+  }
+
+  throw AppError.badRequest(`Unknown pricing tier: ${tierKey}`);
+}
+
+/**
+ * Resolve the combined amount for the CRM's multi-tier lineItems flow - one
+ * Registration, several tier/quantity lines summed into a single amount, so
+ * account-service still sees exactly one registration -> one payment.
+ * Event-level pricing only (no per-session price overrides) - the "Available
+ * pricing" reference table this flow is driven from is event-level too.
+ */
+async function resolveLineItemsAmount({ tenantId, eventId, lineItems }) {
+  const event = await Event.findOne({ _id: eventId, tenantId }).lean();
+  if (!event) throw AppError.notFound("Event not found");
+  const now = new Date();
+
+  let amountCents = 0;
+  const priceBreakdown = [];
+  for (const { tierKey, quantity } of lineItems) {
+    const unitPriceEuros = resolvePriceForTierKey({
+      entity: event,
+      entityLabel: event.title,
+      tierKey,
+      quantity,
+      now,
+    });
+    amountCents += Math.round(unitPriceEuros * 100) * quantity;
+    priceBreakdown.push({ tierKey, quantity, unitPrice: unitPriceEuros });
+  }
+
+  return {
+    amount: amountCents,
+    currency: "eur",
+    productCode: event.productCode || null,
+    eventCategoryCode: event.eventCategoryLookupCode || null,
+    priceBreakdown,
+  };
+}
+
+module.exports = {
+  resolveUnitPriceForEntity,
+  determinePriceCategory,
+  resolveAmount,
+  resolvePriceForTierKey,
+  resolveLineItemsAmount,
+};

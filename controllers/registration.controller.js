@@ -8,7 +8,29 @@ const {
   checkAttendeeDuplicates,
 } = require("../services/profileLookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
-const { determinePriceCategory, resolveAmount } = require("../services/pricingResolution.service.js");
+const {
+  determinePriceCategory,
+  resolveAmount,
+  resolveLineItemsAmount,
+} = require("../services/pricingResolution.service.js");
+
+const LINE_ITEM_TIER_KEYS = [
+  "MEMBER",
+  "NON_MEMBER",
+  "EARLY_BIRD_MEMBER",
+  "EARLY_BIRD_NON_MEMBER",
+  "STUDENT",
+  "GROUP_STUDENT",
+];
+
+// Legacy priceCategory value for display/reporting when the CRM's lineItems
+// flow resolves to a single tier - "mixed" is used instead when more than
+// one tier is purchased together in the same registration.
+function legacyPriceCategoryForTierKey(tierKey) {
+  if (tierKey === "STUDENT") return "student";
+  if (tierKey === "GROUP_STUDENT") return "group_student";
+  return "standard";
+}
 const {
   createRegistrationPaymentIntent,
   postManualRegistrationPayment,
@@ -49,6 +71,7 @@ async function createRegistration(req, res, next) {
       registeredVia,
       registeredByUserId,
       quantity,
+      lineItems,
     } = req.body || {};
 
     if (!registrationType || !["event", "course"].includes(registrationType)) {
@@ -67,7 +90,29 @@ async function createRegistration(req, res, next) {
       return next(AppError.badRequest("registeredVia must be 'crm', 'portal' or 'mobile'"));
     }
 
-    const seatQuantity = quantity != null ? Number(quantity) : 1;
+    // Multi-tier CRM flow: several {tierKey, quantity} lines summed into one
+    // registration/payment. No lineItems (portal/mobile, or CRM with a
+    // single tier) falls through to the legacy single-quantity path below.
+    const hasLineItems = Array.isArray(lineItems) && lineItems.length > 0;
+    if (hasLineItems && registrationType !== "event") {
+      return next(AppError.badRequest("lineItems is only supported for event registrations"));
+    }
+    if (hasLineItems) {
+      for (const line of lineItems) {
+        if (!LINE_ITEM_TIER_KEYS.includes(line?.tierKey)) {
+          return next(AppError.badRequest(`Invalid lineItems.tierKey: ${line?.tierKey}`));
+        }
+        if (!Number.isInteger(line?.quantity) || line.quantity < 1) {
+          return next(AppError.badRequest(`lineItems.quantity for ${line?.tierKey} must be a positive integer`));
+        }
+      }
+    }
+
+    const seatQuantity = hasLineItems
+      ? lineItems.reduce((sum, line) => sum + line.quantity, 0)
+      : quantity != null
+        ? Number(quantity)
+        : 1;
     if (!Number.isInteger(seatQuantity) || seatQuantity < 1) {
       return next(AppError.badRequest("quantity must be a positive integer"));
     }
@@ -119,35 +164,62 @@ async function createRegistration(req, res, next) {
       membershipNumber = resolved.membershipNumber;
     }
 
-    // 3. Determine real (verified) membership status/category - never trust a
-    // client-supplied member/price-category flag. A profile with a
-    // membershipNumber but a lapsed/cancelled subscription still prices as a
+    // 3. Determine real (verified) membership status/category - used for the
+    // isMemberAtRegistration/display flag always, and (legacy single-tier
+    // path only) to auto-derive which pricing tier applies. A profile with a
+    // membershipNumber but a lapsed/cancelled subscription still counts as a
     // non-member.
     const { isActiveMember, membershipCategory } = await getActiveMembership({
       profileId,
       tenantId,
       req,
     });
-    const seatPriceCategory = event
-      ? determinePriceCategory({
-          isActiveMember,
-          membershipCategory,
-          quantity: seatQuantity,
-          entity: event,
-        })
-      : "standard";
 
-    // 4. Price the registration.
-    const { amount, currency, productCode, eventCategoryCode } = await resolveAmount({
-      tenantId,
-      registrationType,
-      eventId,
-      courseId,
-      sessionIds,
-      isMember: isActiveMember,
-      priceCategory: seatPriceCategory,
-      quantity: seatQuantity,
-    });
+    // 4. Price the registration. lineItems (CRM multi-tier flow): the
+    // operator explicitly chose which of the event's own trusted prices to
+    // apply to how many seats - summed into one amount/priceBreakdown so
+    // account-service still sees exactly one registration -> one payment.
+    // Otherwise (portal/mobile, or a CRM submission with a single tier):
+    // legacy path, auto-deriving the tier from verified membership.
+    let amount;
+    let currency;
+    let productCode;
+    let eventCategoryCode;
+    let priceBreakdown = [];
+    let seatPriceCategory;
+    if (hasLineItems) {
+      const resolved = await resolveLineItemsAmount({ tenantId, eventId, lineItems });
+      amount = resolved.amount;
+      currency = resolved.currency;
+      productCode = resolved.productCode;
+      eventCategoryCode = resolved.eventCategoryCode;
+      priceBreakdown = resolved.priceBreakdown;
+      seatPriceCategory =
+        lineItems.length === 1 ? legacyPriceCategoryForTierKey(lineItems[0].tierKey) : "mixed";
+    } else {
+      seatPriceCategory = event
+        ? determinePriceCategory({
+            isActiveMember,
+            membershipCategory,
+            quantity: seatQuantity,
+            entity: event,
+          })
+        : "standard";
+      const resolved = await resolveAmount({
+        tenantId,
+        registrationType,
+        eventId,
+        courseId,
+        sessionIds,
+        isMember: isActiveMember,
+        priceCategory: seatPriceCategory,
+        quantity: seatQuantity,
+      });
+      amount = resolved.amount;
+      currency = resolved.currency;
+      productCode = resolved.productCode;
+      eventCategoryCode = resolved.eventCategoryCode;
+    }
 
     const method = paymentMethod || "stripe";
     const initialStatus = method === "stripe" ? "pending" : "confirmed";
@@ -162,6 +234,7 @@ async function createRegistration(req, res, next) {
       sessionIds: sessionIds || [],
       quantity: seatQuantity,
       priceCategory: seatPriceCategory,
+      priceBreakdown,
       profileId,
       membershipNumber,
       isMemberAtRegistration: isActiveMember,

@@ -23,14 +23,40 @@ const RegistrationSchema = new mongoose.Schema(
     sessionIds: [
       { type: mongoose.Schema.Types.ObjectId, ref: "EventSession" },
     ],
-    quantity: { type: Number, default: 1, min: 1 }, // seats/tickets booked by this single profile
+    quantity: { type: Number, default: 1, min: 1 }, // seats/tickets booked by this single profile - sum of priceBreakdown when the CRM lineItems flow is used
     // Which pricing tier the registrant selected/qualified for - "standard"
     // resolves to member/non-member (with early bird applied automatically
-    // by date, not stored separately). Self-declared, not verified.
+    // by date, not stored separately). "mixed" means priceBreakdown spans
+    // more than one tier (CRM lineItems flow) - see priceBreakdown below.
     priceCategory: {
       type: String,
-      enum: ["standard", "student", "group_student"],
+      enum: ["standard", "student", "group_student", "mixed"],
       default: "standard",
+    },
+    // Per-tier ticket breakdown for the CRM's multi-tier purchase flow (e.g.
+    // 2 at Member price + 1 at Non-member guest price in one registration).
+    // Empty when the legacy single-quantity/priceCategory flow is used
+    // (portal/mobile, or CRM submissions with only one tier).
+    priceBreakdown: {
+      type: [
+        {
+          tierKey: {
+            type: String,
+            enum: [
+              "MEMBER",
+              "NON_MEMBER",
+              "EARLY_BIRD_MEMBER",
+              "EARLY_BIRD_NON_MEMBER",
+              "STUDENT",
+              "GROUP_STUDENT",
+            ],
+            required: true,
+          },
+          quantity: { type: Number, required: true, min: 1 },
+          unitPrice: { type: Number, required: true, min: 0 },
+        },
+      ],
+      default: [],
     },
     profileId: { type: String, required: true, index: true }, // always set - member or attendee-only profile
     membershipNumber: { type: String, default: null }, // cached; null if non-member at registration time
