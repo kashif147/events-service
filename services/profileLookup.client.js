@@ -86,4 +86,35 @@ async function checkAttendeeDuplicates({
   return response.data?.data;
 }
 
-module.exports = { findOrCreateAttendeeProfile, checkAttendeeDuplicates };
+/**
+ * Resolve the real membershipNumber for an already-known Profile
+ * (profile.profileId supplied by the caller - CRM CreateAttendeeDrawer or
+ * portal self-service), via profile-service's batch endpoint, rather than
+ * trusting any caller-supplied membership number. Used when profileId IS
+ * supplied to createRegistration, so Registration.membershipNumber is never
+ * silently left null for existing members.
+ */
+async function getProfileMembershipNumber({ tenantId, profileId }) {
+  if (!profileId) return null;
+  try {
+    const response = await axios.post(
+      `${PROFILE_SERVICE_URL}/api/profile/batch`,
+      { profileIds: [profileId] },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-request": "true",
+          "x-tenant-id": tenantId || "",
+        },
+        timeout: 15000,
+      },
+    );
+    const profiles = response.data?.data || [];
+    return profiles[0]?.membershipNumber || null;
+  } catch (error) {
+    console.error("[profileLookup] getProfileMembershipNumber failed:", error.message);
+    return null;
+  }
+}
+
+module.exports = { findOrCreateAttendeeProfile, checkAttendeeDuplicates, getProfileMembershipNumber };

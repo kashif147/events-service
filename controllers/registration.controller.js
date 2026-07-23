@@ -1,11 +1,13 @@
 const mongoose = require("mongoose");
 const Event = require("../models/event.model.js");
 const EventSession = require("../models/eventSession.model.js");
+const Course = require("../models/course.model.js");
 const Registration = require("../models/registration.model.js");
 const { AppError } = require("../errors/AppError.js");
 const {
   findOrCreateAttendeeProfile,
   checkAttendeeDuplicates,
+  getProfileMembershipNumber,
 } = require("../services/profileLookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
 const {
@@ -56,6 +58,23 @@ async function getBookedSeats({ tenantId, eventId, sessionId }) {
     { $group: { _id: null, total: { $sum: { $ifNull: ["$quantity", 1] } } } },
   ]);
   return result?.total || 0;
+}
+
+/**
+ * Event/Course product metadata for GL posting - the same productCode/
+ * eventCategoryCode fields resolveAmount() reads at creation time
+ * (pricingResolution.service.js), needed again here because Registration
+ * itself never persists these two fields.
+ */
+async function resolveProductMetadata({ tenantId, registrationType, eventId, courseId }) {
+  if (registrationType === "course") {
+    const course = await Course.findOne({ _id: courseId, tenantId }).select("productCode").lean();
+    return { productCode: course?.productCode || null, eventCategoryCode: null };
+  }
+  const event = await Event.findOne({ _id: eventId, tenantId })
+    .select("productCode eventCategoryLookupCode")
+    .lean();
+  return { productCode: event?.productCode || null, eventCategoryCode: event?.eventCategoryLookupCode || null };
 }
 
 async function createRegistration(req, res, next) {
@@ -170,6 +189,12 @@ async function createRegistration(req, res, next) {
       });
       profileId = resolved.profileId;
       membershipNumber = resolved.membershipNumber;
+    } else {
+      // Existing member/profile supplied by the caller (CRM CreateAttendeeDrawer
+      // or portal self-service) - resolve the real membershipNumber
+      // server-side rather than trusting the frontend to have sent it, so the
+      // resulting payment reliably attaches to that member's own ledger.
+      membershipNumber = await getProfileMembershipNumber({ tenantId, profileId });
     }
 
     // 3. Determine real (verified) membership status/category - used for the
@@ -414,7 +439,10 @@ async function cancelRegistration(req, res, next) {
     const { tenantId } = req.ctx;
     const registration = await Registration.findOneAndUpdate(
       { _id: req.params.id, tenantId, isDeleted: { $ne: true } },
-      { $set: { status: "cancelled" } },
+      // isActive:false frees the unique registration slot for this
+      // profile/event(-or-course) so re-registering the same profile no
+      // longer 400s with "already registered" (see registration.model.js).
+      { $set: { status: "cancelled", isActive: false } },
       { new: true },
     );
     if (!registration) return next(AppError.notFound("Registration not found"));
@@ -424,6 +452,62 @@ async function cancelRegistration(req, res, next) {
     return res.status(200).json({ success: true, data: registration });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to cancel registration"));
+  }
+}
+
+/**
+ * Manual payment confirmation only - staff confirms payment was received
+ * outside Stripe (or a manual/invoice/comp registration that's stuck
+ * pending). The atomic {status:'pending'} guard is the sole idempotency
+ * mechanism: postManualRegistrationPayment()'s "manual" branch mints a fresh
+ * Payment._id per call (docNo keyed off it), so it is NOT safe to call twice
+ * for the same registration - only the caller that wins the atomic
+ * transition may proceed to post the GL entry.
+ */
+async function approveRegistration(req, res, next) {
+  try {
+    const { tenantId } = req.ctx;
+    const registration = await Registration.findOneAndUpdate(
+      { _id: req.params.id, tenantId, status: "pending" },
+      { $set: { status: "confirmed", paymentStatus: "manual", paymentMethod: "manual" } },
+      { new: true },
+    );
+    if (!registration) {
+      return next(
+        AppError.badRequest(
+          "This registration is not awaiting confirmation (already confirmed, cancelled, or not found).",
+        ),
+      );
+    }
+
+    const { productCode, eventCategoryCode } = await resolveProductMetadata({
+      tenantId,
+      registrationType: registration.registrationType,
+      eventId: registration.eventId,
+      courseId: registration.courseId,
+    });
+
+    const manual = await postManualRegistrationPayment({
+      req,
+      tenantId,
+      registrationId: String(registration._id),
+      profileId: registration.profileId,
+      membershipNumber: registration.membershipNumber,
+      productCode,
+      eventCategoryCode,
+      amount: registration.amount,
+      currency: registration.currency,
+      method: "manual",
+    });
+    registration.paymentId = manual?.paymentId || null;
+    await registration.save();
+
+    await publishRegistrationConfirmed(registration, tenantId);
+
+    return res.status(200).json({ success: true, data: registration });
+  } catch (error) {
+    if (error instanceof AppError) return next(error);
+    return next(AppError.internalServerError(error.message || "Failed to approve registration"));
   }
 }
 
@@ -460,5 +544,6 @@ module.exports = {
   listRegistrations,
   getRegistrationsByProfile,
   cancelRegistration,
+  approveRegistration,
   checkNewAttendeeDuplicates,
 };

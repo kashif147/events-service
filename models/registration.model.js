@@ -107,13 +107,17 @@ const RegistrationSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+// isActive:true scopes uniqueness to the registration currently occupying
+// this profile/event(-or-course) slot - cancelRegistration flips isActive to
+// false so a cancelled registration no longer blocks re-registration (see
+// migrate-registration-isActive-index.js for the index/backfill migration).
 RegistrationSchema.index(
   { tenantId: 1, eventId: 1, profileId: 1 },
-  { unique: true, partialFilterExpression: { eventId: { $type: "objectId" } } },
+  { unique: true, partialFilterExpression: { eventId: { $type: "objectId" }, isActive: true } },
 );
 RegistrationSchema.index(
   { tenantId: 1, courseId: 1, profileId: 1 },
-  { unique: true, partialFilterExpression: { courseId: { $type: "objectId" } } },
+  { unique: true, partialFilterExpression: { courseId: { $type: "objectId" }, isActive: true } },
 );
 RegistrationSchema.index({ tenantId: 1, paymentId: 1 });
 
