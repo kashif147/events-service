@@ -62,10 +62,15 @@ async function createRegistrationPaymentIntent({
       // payment still surfaces in their per-member ledger view (ledgerDomain
       // still marks it as "events" revenue, not membership revenue).
       ...(membershipNumber ? { memberId: membershipNumber } : {}),
-      productCode,
+      // account-service's zCreateIntent declares these z.string().optional() -
+      // that accepts undefined but rejects a literal null (400), and events
+      // without a synced Product legitimately have productCode/eventCategoryCode
+      // as null (see resolveProductMetadata/resolveAmount) - omit rather than
+      // send null.
+      ...(productCode ? { productCode } : {}),
       // Event Category code (CPD | EVENT) - lets account-service resolve the
       // GL income account directly, decoupled from the synced Product record.
-      eventCategoryCode,
+      ...(eventCategoryCode ? { eventCategoryCode } : {}),
       amount,
       currency,
       purpose, // "eventRegistration" | "courseRegistration"
@@ -102,8 +107,10 @@ async function postManualRegistrationPayment({
       registrationId,
       profileId,
       ...(membershipNumber ? { memberId: membershipNumber } : {}),
-      productCode,
-      eventCategoryCode,
+      // Same null-vs-undefined caveat as createRegistrationPaymentIntent -
+      // omit rather than send a literal null.
+      ...(productCode ? { productCode } : {}),
+      ...(eventCategoryCode ? { eventCategoryCode } : {}),
       amount,
       currency,
       method,
