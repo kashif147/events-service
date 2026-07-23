@@ -15,10 +15,32 @@ async function findOrCreateAttendeeProfile({
   firstName,
   lastName,
   phone,
+  workLocation,
+  grade,
+  addressLine1,
+  addressLine2,
+  townCity,
+  countyState,
+  eircode,
+  country,
 }) {
   const response = await axios.post(
     `${PROFILE_SERVICE_URL}/api/profile/internal/find-or-create-attendee`,
-    { tenantId, email, firstName, lastName, phone },
+    {
+      tenantId,
+      email,
+      firstName,
+      lastName,
+      phone,
+      workLocation,
+      grade,
+      addressLine1,
+      addressLine2,
+      townCity,
+      countyState,
+      eircode,
+      country,
+    },
     {
       headers: {
         "Content-Type": "application/json",
@@ -37,10 +59,21 @@ async function findOrCreateAttendeeProfile({
  * attendeeProfileLookup.helper.js's checkAttendeeDuplicates for the
  * exact/review/none resolution semantics.
  */
-async function checkAttendeeDuplicates({ tenantId, email, firstName, lastName, phone }) {
+async function checkAttendeeDuplicates({
+  tenantId,
+  email,
+  firstName,
+  lastName,
+  phone,
+  addressLine1,
+  townCity,
+  countyState,
+  eircode,
+  country,
+}) {
   const response = await axios.post(
     `${PROFILE_SERVICE_URL}/api/profile/internal/attendee-duplicate-check`,
-    { tenantId, email, firstName, lastName, phone },
+    { tenantId, email, firstName, lastName, phone, addressLine1, townCity, countyState, eircode, country },
     {
       headers: {
         "Content-Type": "application/json",

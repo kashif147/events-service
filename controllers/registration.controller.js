@@ -159,6 +159,14 @@ async function createRegistration(req, res, next) {
         firstName: profile.firstName,
         lastName: profile.lastName,
         phone: profile.phone,
+        workLocation: profile.workLocation,
+        grade: profile.grade,
+        addressLine1: profile.addressLine1,
+        addressLine2: profile.addressLine2,
+        townCity: profile.townCity,
+        countyState: profile.countyState,
+        eircode: profile.eircode,
+        country: profile.country,
       });
       profileId = resolved.profileId;
       membershipNumber = resolved.membershipNumber;
@@ -245,6 +253,12 @@ async function createRegistration(req, res, next) {
         phone: profile.phone || null,
         workLocation: profile.workLocation || null,
         grade: profile.grade || null,
+        addressLine1: profile.addressLine1 || null,
+        addressLine2: profile.addressLine2 || null,
+        townCity: profile.townCity || null,
+        countyState: profile.countyState || null,
+        eircode: profile.eircode || null,
+        country: profile.country || null,
       },
       amount,
       currency,
@@ -299,8 +313,52 @@ async function createRegistration(req, res, next) {
     });
   } catch (error) {
     if (error instanceof AppError) return next(error);
+    // Registration has a unique {tenantId, eventId/courseId, profileId} index -
+    // one profile can only have one registration per event/course. Surface
+    // that as a clear message instead of the raw Mongo E11000 text.
+    if (error?.code === 11000) {
+      return next(
+        AppError.badRequest(
+          "This profile is already registered for this event. Cancel their existing registration first if you need to change the ticket(s).",
+        ),
+      );
+    }
     return next(AppError.internalServerError(error.message || "Failed to create registration"));
   }
+}
+
+/** Batch-fetch the distinct events referenced by a set of registrations, keyed by id string. */
+async function getEventsMapForRegistrations({ tenantId, registrations }) {
+  const eventIds = [
+    ...new Set(
+      registrations
+        .filter((r) => r.registrationType === "event" && r.eventId)
+        .map((r) => String(r.eventId)),
+    ),
+  ];
+  if (!eventIds.length) return new Map();
+
+  const events = await Event.find({ _id: { $in: eventIds }, tenantId })
+    .select("title eventTypeId eventCategoryLookupId eventCategoryLookupCode eventCategoryCode startDate endDate")
+    .lean();
+  return new Map(events.map((ev) => [String(ev._id), ev]));
+}
+
+/** Merge event fields onto each registration for grid display (Event Name/Type/Category/Date). */
+function enrichRegistrationsWithEvent(registrations, eventsById) {
+  return registrations.map((reg) => {
+    const event = reg.eventId ? eventsById.get(String(reg.eventId)) : null;
+    return {
+      ...reg,
+      eventTitle: event?.title || null,
+      eventTypeId: event?.eventTypeId || null,
+      eventCategoryLookupId: event?.eventCategoryLookupId || null,
+      eventCategoryLookupCode: event?.eventCategoryLookupCode || null,
+      eventCategoryCode: event?.eventCategoryCode || null,
+      eventStartDate: event?.startDate || null,
+      eventEndDate: event?.endDate || null,
+    };
+  });
 }
 
 async function listRegistrations(req, res, next) {
@@ -322,8 +380,12 @@ async function listRegistrations(req, res, next) {
       ];
     }
 
-    const registrations = await Registration.find(filter).sort({ createdAt: -1 }).limit(20).lean();
-    return res.status(200).json({ success: true, data: registrations });
+    // No limit - this backs the CRM Attendees grid, which filters/sorts
+    // client-side over the full result set (same pattern as listEvents).
+    const registrations = await Registration.find(filter).sort({ createdAt: -1 }).lean();
+    const eventsById = await getEventsMapForRegistrations({ tenantId, registrations });
+    const enriched = enrichRegistrationsWithEvent(registrations, eventsById);
+    return res.status(200).json({ success: true, data: enriched });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to list registrations"));
   }
@@ -371,10 +433,22 @@ async function cancelRegistration(req, res, next) {
 async function checkNewAttendeeDuplicates(req, res, next) {
   try {
     const { tenantId } = req.ctx;
-    const { email, firstName, lastName, phone } = req.body || {};
+    const { email, firstName, lastName, phone, addressLine1, townCity, countyState, eircode, country } =
+      req.body || {};
     if (!email) return next(AppError.badRequest("email is required"));
 
-    const result = await checkAttendeeDuplicates({ tenantId, email, firstName, lastName, phone });
+    const result = await checkAttendeeDuplicates({
+      tenantId,
+      email,
+      firstName,
+      lastName,
+      phone,
+      addressLine1,
+      townCity,
+      countyState,
+      eircode,
+      country,
+    });
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to check attendee duplicates"));

@@ -15,11 +15,19 @@ const EVENTS_FILTER_FIELD_MAP = {
   venue: "venue",
   startDate: "startDate",
   endDate: "endDate",
+  // Attendees grid (registrations) - reuses eventName/eventCategory/eventType
+  // above for its own "Event"/"Event Category"/"Event Type" filters, plus
+  // these registration-specific keys.
+  registrationStatus: "registrationStatus",
+  paymentStatus: "paymentStatus",
+  grade: "grade",
+  workLocation: "workLocation",
+  eventDate: "eventDate",
 };
 
 const EVENTS_TEMPLATE_FILTER_KEYS = Object.keys(EVENTS_FILTER_FIELD_MAP);
 
-const EVENTS_TEMPLATE_TYPES = ["eventssummary"];
+const EVENTS_TEMPLATE_TYPES = ["eventssummary", "attendees"];
 
 module.exports = {
   FILTER_OPERATOR,
