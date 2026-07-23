@@ -1,0 +1,541 @@
+{
+  "info": {
+    "name": "Events Service API",
+    "description": "Complete API collection for Events Service (events, sessions, courses, registrations, certificates, filter templates). All routes are mounted under /api and require authentication (either a gateway-forwarded JWT, or a direct Bearer token if AUTH_BYPASS is not enabled).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4011", "type": "string" },
+    { "key": "authToken", "value": "", "type": "string" },
+    { "key": "eventId", "value": "", "type": "string" },
+    { "key": "sessionId", "value": "", "type": "string" },
+    { "key": "courseId", "value": "", "type": "string" },
+    { "key": "registrationId", "value": "", "type": "string" },
+    { "key": "profileId", "value": "", "type": "string" },
+    { "key": "templateId", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health & Info",
+      "item": [
+        {
+          "name": "API Info",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api",
+              "host": ["{{baseUrl}}"],
+              "path": ["api"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Events",
+      "item": [
+        {
+          "name": "List Events",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/events?status=Published&from=2026-01-01&to=2026-12-31&q=conference&eventCategoryCode=CPD",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "events"],
+              "query": [
+                { "key": "status", "value": "Published", "description": "Draft | Published | Cancelled | Completed" },
+                { "key": "from", "value": "2026-01-01", "description": "startDate >= from" },
+                { "key": "to", "value": "2026-12-31", "description": "startDate <= to" },
+                { "key": "q", "value": "conference", "description": "case-insensitive title search" },
+                { "key": "eventCategoryCode", "value": "CPD" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Event by ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "events", "{{eventId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Event Price Quote",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}/price-quote?profileId={{profileId}}&quantity=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "events", "{{eventId}}", "price-quote"],
+              "query": [
+                { "key": "profileId", "value": "{{profileId}}", "description": "optional - omit to quote as a non-member" },
+                { "key": "quantity", "value": "1" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Annual Nursing Conference\",\n  \"description\": \"<p>Full-day CPD conference.</p>\",\n  \"eventCategoryLookupId\": \"\",\n  \"eventCategoryProductTypeId\": \"\",\n  \"eventTypeId\": \"\",\n  \"venueId\": \"\",\n  \"venue\": \"Croke Park Conference Centre\",\n  \"isVirtual\": false,\n  \"imageUrl\": \"\",\n  \"startDate\": \"2026-09-15T09:00:00.000Z\",\n  \"endDate\": \"2026-09-15T17:00:00.000Z\",\n  \"capacity\": 200,\n  \"status\": \"Draft\",\n  \"isActive\": true,\n  \"memberPrice\": 50,\n  \"nonMemberPrice\": 90,\n  \"pricingTiers\": [\n    {\n      \"tierType\": \"EARLY_BIRD_MEMBER\",\n      \"price\": 35,\n      \"cutoffDate\": \"2026-08-01T00:00:00.000Z\",\n      \"isActive\": true\n    }\n  ],\n  \"cpdCredits\": 6,\n  \"accreditationBody\": \"\",\n  \"certificationType\": \"attendance\",\n  \"autoIssueOnFinish\": false,\n  \"costs\": [],\n  \"refundPolicyDays\": 7,\n  \"allowPartialAttendance\": false,\n  \"perDayPricing\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/events",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "events"]
+            }
+          }
+        },
+        {
+          "name": "Update Event",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Annual Nursing Conference (Updated)\",\n  \"capacity\": 250\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "events", "{{eventId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Event (soft delete, Draft only)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "events", "{{eventId}}"]
+            }
+          }
+        },
+        {
+          "name": "Upload Event Image",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "image", "type": "file", "src": [] }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}/image",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "events", "{{eventId}}", "image"],
+              "description": "Use \"draft\" in place of {{eventId}} when uploading before the event is first saved."
+            }
+          }
+        },
+        {
+          "name": "Add Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"Day 1\",\n  \"date\": \"2026-09-15\",\n  \"startTime\": \"09:00\",\n  \"endTime\": \"17:00\",\n  \"isVirtual\": false,\n  \"capacity\": 100,\n  \"memberPrice\": 30,\n  \"nonMemberPrice\": 50,\n  \"pricingTiers\": []\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}/sessions",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "events", "{{eventId}}", "sessions"]
+            }
+          }
+        },
+        {
+          "name": "Update Session",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"Day 1 (Updated)\",\n  \"capacity\": 120\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}/sessions/{{sessionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "events", "{{eventId}}", "sessions", "{{sessionId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Session",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}/sessions/{{sessionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "events", "{{eventId}}", "sessions", "{{sessionId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Courses",
+      "item": [
+        {
+          "name": "List Courses",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/courses?status=Published&from=2026-01-01&to=2026-12-31&q=first%20aid",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "courses"],
+              "query": [
+                { "key": "status", "value": "Published" },
+                { "key": "from", "value": "2026-01-01" },
+                { "key": "to", "value": "2026-12-31" },
+                { "key": "q", "value": "first aid" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Course by ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/courses/{{courseId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "courses", "{{courseId}}"]
+            }
+          }
+        },
+        {
+          "name": "Create Course",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Manual Handling Refresher\",\n  \"description\": \"Online self-paced course\",\n  \"deliveryMode\": \"online\",\n  \"startDate\": \"2026-10-01T00:00:00.000Z\",\n  \"endDate\": \"2026-10-31T00:00:00.000Z\",\n  \"capacity\": 500,\n  \"status\": \"Draft\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/courses",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "courses"]
+            }
+          }
+        },
+        {
+          "name": "Update Course",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"capacity\": 600,\n  \"status\": \"Published\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/courses/{{courseId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "courses", "{{courseId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Course (soft delete)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/courses/{{courseId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "courses", "{{courseId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Registrations",
+      "item": [
+        {
+          "name": "List Registrations",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations?eventId={{eventId}}&status=confirmed&q=smith",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations"],
+              "query": [
+                { "key": "eventId", "value": "{{eventId}}" },
+                { "key": "courseId", "value": "", "disabled": true },
+                { "key": "profileId", "value": "", "disabled": true },
+                { "key": "status", "value": "confirmed", "description": "pending | confirmed | cancelled" },
+                { "key": "q", "value": "smith", "description": "matches attendee first/last name or email" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Registrations by Profile (My Events)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations/profile/{{profileId}}?timing=upcoming",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations", "profile", "{{profileId}}"],
+              "query": [
+                { "key": "timing", "value": "upcoming", "description": "optional: past | current | upcoming - omit to get all", "disabled": true }
+              ]
+            },
+            "description": "Every registration (event or course) for this profile, enriched with: title, startDate, endDate, venue, format (Virtual/In-Person/Hybrid), eventTypeId + eventTypeName (resolved via user-service Lookup), eventCategoryLookupCode, cpdCredits, accreditationBody, certificationType, imageUrl, deliveryMode (courses), parentStatus (the Event/Course's own status), and registered sessions. Each row also gets a computed `timing` field (past/current/upcoming) so the portal can show tabs/sections without extra date math; pass ?timing= to filter server-side instead."
+          }
+        },
+        {
+          "name": "Create Registration (single tier / legacy)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"registrationType\": \"event\",\n  \"eventId\": \"{{eventId}}\",\n  \"sessionIds\": [],\n  \"quantity\": 1,\n  \"profile\": {\n    \"profileId\": \"\",\n    \"email\": \"attendee@example.com\",\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\",\n    \"phone\": \"\",\n    \"workLocation\": \"\",\n    \"grade\": \"\",\n    \"addressLine1\": \"\",\n    \"addressLine2\": \"\",\n    \"townCity\": \"\",\n    \"countyState\": \"\",\n    \"eircode\": \"\",\n    \"country\": \"Ireland\"\n  },\n  \"paymentMethod\": \"stripe\",\n  \"registeredVia\": \"crm\",\n  \"registeredByUserId\": \"\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations"]
+            }
+          }
+        },
+        {
+          "name": "Create Registration (multi-tier lineItems, CRM)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"registrationType\": \"event\",\n  \"eventId\": \"{{eventId}}\",\n  \"sessionIds\": [],\n  \"lineItems\": [\n    { \"tierKey\": \"MEMBER\", \"quantity\": 2 },\n    { \"tierKey\": \"STUDENT\", \"quantity\": 1 }\n  ],\n  \"profile\": {\n    \"email\": \"attendee@example.com\",\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\"\n  },\n  \"paymentMethod\": \"manual\",\n  \"registeredVia\": \"crm\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations"]
+            }
+          }
+        },
+        {
+          "name": "Check New Attendee Duplicates",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"attendee@example.com\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"phone\": \"\",\n  \"addressLine1\": \"\",\n  \"townCity\": \"\",\n  \"countyState\": \"\",\n  \"eircode\": \"\",\n  \"country\": \"Ireland\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations/attendee-duplicate-check",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations", "attendee-duplicate-check"]
+            }
+          }
+        },
+        {
+          "name": "Cancel Registration",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations/{{registrationId}}/cancel",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations", "{{registrationId}}", "cancel"]
+            }
+          }
+        },
+        {
+          "name": "Approve Registration (manual payment confirmation)",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations/{{registrationId}}/approve",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations", "{{registrationId}}", "approve"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Certificates",
+      "item": [
+        {
+          "name": "Issue Certificate",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"templateId\": \"\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/certificates/{{registrationId}}/issue",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "certificates", "{{registrationId}}", "issue"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Filter Templates",
+      "item": [
+        {
+          "name": "Create Template",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"My Events View\",\n  \"templateType\": \"eventssummary\",\n  \"filters\": {},\n  \"columns\": [\"title\", \"startDate\", \"status\"],\n  \"columnLabels\": {},\n  \"visibleFilters\": [],\n  \"isDefault\": false,\n  \"pinned\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/templates",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "templates"]
+            }
+          }
+        },
+        {
+          "name": "Get User Templates",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/templates?type=eventssummary",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "templates"],
+              "query": [{ "key": "type", "value": "eventssummary" }]
+            }
+          }
+        },
+        {
+          "name": "Get Default Template",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/templates/default",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "templates", "default"]
+            }
+          }
+        },
+        {
+          "name": "Get Template by ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/templates/{{templateId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "templates", "{{templateId}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Template",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"My Events View (Updated)\",\n  \"isDefault\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/templates/{{templateId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "templates", "{{templateId}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Template",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/templates/{{templateId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "templates", "{{templateId}}"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

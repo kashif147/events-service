@@ -8,8 +8,10 @@ const {
   findOrCreateAttendeeProfile,
   checkAttendeeDuplicates,
   getProfileMembershipNumber,
+  deleteAttendeeProfile,
 } = require("../services/profileLookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
+const { resolveLookupNamesByIds } = require("../services/lookup.client.js");
 const {
   determinePriceCategory,
   resolveAmount,
@@ -171,6 +173,7 @@ async function createRegistration(req, res, next) {
     // membership application pipeline.
     let profileId = profile.profileId;
     let membershipNumber = null;
+    let profileWasCreated = false;
     if (!profileId) {
       const resolved = await findOrCreateAttendeeProfile({
         tenantId,
@@ -189,6 +192,7 @@ async function createRegistration(req, res, next) {
       });
       profileId = resolved.profileId;
       membershipNumber = resolved.membershipNumber;
+      profileWasCreated = !!resolved.created;
     } else {
       // Existing member/profile supplied by the caller (CRM CreateAttendeeDrawer
       // or portal self-service) - resolve the real membershipNumber
@@ -197,145 +201,163 @@ async function createRegistration(req, res, next) {
       membershipNumber = await getProfileMembershipNumber({ tenantId, profileId });
     }
 
-    // 3. Determine real (verified) membership status/category - used for the
-    // isMemberAtRegistration/display flag always, and (legacy single-tier
-    // path only) to auto-derive which pricing tier applies. A profile with a
-    // membershipNumber but a lapsed/cancelled subscription still counts as a
-    // non-member.
-    const { isActiveMember, membershipCategory } = await getActiveMembership({
-      profileId,
-      tenantId,
-      req,
-    });
+    // Everything from here on can still fail (pricing, the Registration
+    // write, or taking payment) - if it does, roll back rather than leaving
+    // a half-created Profile/Registration with no successful payment behind.
+    let registration = null;
+    try {
+      // 3. Determine real (verified) membership status/category - used for
+      // the isMemberAtRegistration/display flag always, and (legacy
+      // single-tier path only) to auto-derive which pricing tier applies. A
+      // profile with a membershipNumber but a lapsed/cancelled subscription
+      // still counts as a non-member.
+      const { isActiveMember, membershipCategory } = await getActiveMembership({
+        profileId,
+        tenantId,
+        req,
+      });
 
-    // 4. Price the registration. lineItems (CRM multi-tier flow): the
-    // operator explicitly chose which of the event's own trusted prices to
-    // apply to how many seats - summed into one amount/priceBreakdown so
-    // account-service still sees exactly one registration -> one payment.
-    // Otherwise (portal/mobile, or a CRM submission with a single tier):
-    // legacy path, auto-deriving the tier from verified membership.
-    let amount;
-    let currency;
-    let productCode;
-    let eventCategoryCode;
-    let priceBreakdown = [];
-    let seatPriceCategory;
-    if (hasLineItems) {
-      const resolved = await resolveLineItemsAmount({ tenantId, eventId, lineItems });
-      amount = resolved.amount;
-      currency = resolved.currency;
-      productCode = resolved.productCode;
-      eventCategoryCode = resolved.eventCategoryCode;
-      priceBreakdown = resolved.priceBreakdown;
-      seatPriceCategory =
-        lineItems.length === 1 ? legacyPriceCategoryForTierKey(lineItems[0].tierKey) : "mixed";
-    } else {
-      seatPriceCategory = event
-        ? determinePriceCategory({
-            isActiveMember,
-            membershipCategory,
-            quantity: seatQuantity,
-            entity: event,
-          })
-        : "standard";
-      const resolved = await resolveAmount({
+      // 4. Price the registration. lineItems (CRM multi-tier flow): the
+      // operator explicitly chose which of the event's own trusted prices to
+      // apply to how many seats - summed into one amount/priceBreakdown so
+      // account-service still sees exactly one registration -> one payment.
+      // Otherwise (portal/mobile, or a CRM submission with a single tier):
+      // legacy path, auto-deriving the tier from verified membership.
+      let amount;
+      let currency;
+      let productCode;
+      let eventCategoryCode;
+      let priceBreakdown = [];
+      let seatPriceCategory;
+      if (hasLineItems) {
+        const resolved = await resolveLineItemsAmount({ tenantId, eventId, lineItems });
+        amount = resolved.amount;
+        currency = resolved.currency;
+        productCode = resolved.productCode;
+        eventCategoryCode = resolved.eventCategoryCode;
+        priceBreakdown = resolved.priceBreakdown;
+        seatPriceCategory =
+          lineItems.length === 1 ? legacyPriceCategoryForTierKey(lineItems[0].tierKey) : "mixed";
+      } else {
+        seatPriceCategory = event
+          ? determinePriceCategory({
+              isActiveMember,
+              membershipCategory,
+              quantity: seatQuantity,
+              entity: event,
+            })
+          : "standard";
+        const resolved = await resolveAmount({
+          tenantId,
+          registrationType,
+          eventId,
+          courseId,
+          sessionIds,
+          isMember: isActiveMember,
+          priceCategory: seatPriceCategory,
+          quantity: seatQuantity,
+        });
+        amount = resolved.amount;
+        currency = resolved.currency;
+        productCode = resolved.productCode;
+        eventCategoryCode = resolved.eventCategoryCode;
+      }
+
+      const method = paymentMethod || "stripe";
+      const initialStatus = method === "stripe" ? "pending" : "confirmed";
+      const initialPaymentStatus =
+        method === "stripe" ? "pending" : method === "comp" ? "waived" : "manual";
+
+      registration = await Registration.create({
         tenantId,
         registrationType,
-        eventId,
-        courseId,
-        sessionIds,
-        isMember: isActiveMember,
-        priceCategory: seatPriceCategory,
+        eventId: registrationType === "event" ? eventId : null,
+        courseId: registrationType === "course" ? courseId : null,
+        sessionIds: sessionIds || [],
         quantity: seatQuantity,
-      });
-      amount = resolved.amount;
-      currency = resolved.currency;
-      productCode = resolved.productCode;
-      eventCategoryCode = resolved.eventCategoryCode;
-    }
-
-    const method = paymentMethod || "stripe";
-    const initialStatus = method === "stripe" ? "pending" : "confirmed";
-    const initialPaymentStatus =
-      method === "stripe" ? "pending" : method === "comp" ? "waived" : "manual";
-
-    const registration = await Registration.create({
-      tenantId,
-      registrationType,
-      eventId: registrationType === "event" ? eventId : null,
-      courseId: registrationType === "course" ? courseId : null,
-      sessionIds: sessionIds || [],
-      quantity: seatQuantity,
-      priceCategory: seatPriceCategory,
-      priceBreakdown,
-      profileId,
-      membershipNumber,
-      isMemberAtRegistration: isActiveMember,
-      attendeeSnapshot: {
-        firstName: profile.firstName || null,
-        lastName: profile.lastName || null,
-        email: profile.email,
-        phone: profile.phone || null,
-        workLocation: profile.workLocation || null,
-        grade: profile.grade || null,
-        addressLine1: profile.addressLine1 || null,
-        addressLine2: profile.addressLine2 || null,
-        townCity: profile.townCity || null,
-        countyState: profile.countyState || null,
-        eircode: profile.eircode || null,
-        country: profile.country || null,
-      },
-      amount,
-      currency,
-      paymentMethod: method,
-      paymentStatus: initialPaymentStatus,
-      status: initialStatus,
-      registeredVia,
-      registeredByUserId: registeredByUserId || null,
-    });
-
-    await publishRegistrationCreated(registration, tenantId);
-
-    // 5. Take payment.
-    let paymentPayload = null;
-    if (method === "stripe") {
-      const intent = await createRegistrationPaymentIntent({
-        req,
-        tenantId,
-        registrationId: String(registration._id),
+        priceCategory: seatPriceCategory,
+        priceBreakdown,
         profileId,
         membershipNumber,
+        isMemberAtRegistration: isActiveMember,
+        attendeeSnapshot: {
+          firstName: profile.firstName || null,
+          lastName: profile.lastName || null,
+          email: profile.email,
+          phone: profile.phone || null,
+          workLocation: profile.workLocation || null,
+          grade: profile.grade || null,
+          addressLine1: profile.addressLine1 || null,
+          addressLine2: profile.addressLine2 || null,
+          townCity: profile.townCity || null,
+          countyState: profile.countyState || null,
+          eircode: profile.eircode || null,
+          country: profile.country || null,
+        },
         amount,
         currency,
-        productCode,
-        eventCategoryCode,
-        purpose: registrationType === "course" ? "courseRegistration" : "eventRegistration",
+        paymentMethod: method,
+        paymentStatus: initialPaymentStatus,
+        status: initialStatus,
+        registeredVia,
+        registeredByUserId: registeredByUserId || null,
       });
-      registration.paymentId = intent?.paymentId || null;
-      await registration.save();
-      paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
-    } else {
-      const manual = await postManualRegistrationPayment({
-        req,
-        tenantId,
-        registrationId: String(registration._id),
-        profileId,
-        membershipNumber,
-        productCode,
-        eventCategoryCode,
-        amount,
-        currency,
-        method,
-      });
-      registration.paymentId = manual?.paymentId || null;
-      await registration.save();
-      await publishRegistrationConfirmed(registration, tenantId);
-    }
 
-    return res.status(201).json({
-      success: true,
-      data: { registration, payment: paymentPayload },
-    });
+      // 5. Take payment. Only announce the registration once it actually has
+      // a payment attached (intent created, or manual/comp/invoice posted) -
+      // never for one that's about to be rolled back below.
+      let paymentPayload = null;
+      if (method === "stripe") {
+        const intent = await createRegistrationPaymentIntent({
+          req,
+          tenantId,
+          registrationId: String(registration._id),
+          profileId,
+          membershipNumber,
+          amount,
+          currency,
+          productCode,
+          eventCategoryCode,
+          purpose: registrationType === "course" ? "courseRegistration" : "eventRegistration",
+        });
+        registration.paymentId = intent?.paymentId || null;
+        await registration.save();
+        paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
+        await publishRegistrationCreated(registration, tenantId);
+      } else {
+        const manual = await postManualRegistrationPayment({
+          req,
+          tenantId,
+          registrationId: String(registration._id),
+          profileId,
+          membershipNumber,
+          productCode,
+          eventCategoryCode,
+          amount,
+          currency,
+          method,
+        });
+        registration.paymentId = manual?.paymentId || null;
+        await registration.save();
+        await publishRegistrationCreated(registration, tenantId);
+        await publishRegistrationConfirmed(registration, tenantId);
+      }
+
+      return res.status(201).json({
+        success: true,
+        data: { registration, payment: paymentPayload },
+      });
+    } catch (innerError) {
+      // Roll back: don't leave a half-created Registration/Profile behind
+      // just because payment (or pricing) failed after they were created.
+      if (registration) {
+        await Registration.deleteOne({ _id: registration._id, tenantId }).catch(() => {});
+      }
+      if (profileWasCreated) {
+        await deleteAttendeeProfile({ tenantId, profileId });
+      }
+      throw innerError;
+    }
   } catch (error) {
     if (error instanceof AppError) return next(error);
     // Registration has a unique {tenantId, eventId/courseId, profileId} index -
@@ -364,9 +386,109 @@ async function getEventsMapForRegistrations({ tenantId, registrations }) {
   if (!eventIds.length) return new Map();
 
   const events = await Event.find({ _id: { $in: eventIds }, tenantId })
-    .select("title eventTypeId eventCategoryLookupId eventCategoryLookupCode eventCategoryCode startDate endDate")
+    .select(
+      "title eventTypeId eventCategoryLookupId eventCategoryLookupCode eventCategoryCode startDate endDate venue isVirtual imageUrl status cpdCredits accreditationBody certificationType",
+    )
     .lean();
   return new Map(events.map((ev) => [String(ev._id), ev]));
+}
+
+/** Batch-fetch the distinct courses referenced by a set of registrations, keyed by id string. */
+async function getCoursesMapForRegistrations({ tenantId, registrations }) {
+  const courseIds = [
+    ...new Set(
+      registrations
+        .filter((r) => r.registrationType === "course" && r.courseId)
+        .map((r) => String(r.courseId)),
+    ),
+  ];
+  if (!courseIds.length) return new Map();
+
+  const courses = await Course.find({ _id: { $in: courseIds }, tenantId })
+    .select("title deliveryMode startDate endDate status")
+    .lean();
+  return new Map(courses.map((course) => [String(course._id), course]));
+}
+
+/** Batch-fetch the distinct sessions a profile registered for, keyed by id string. */
+async function getSessionsMapForRegistrations({ tenantId, registrations }) {
+  const sessionIds = [
+    ...new Set(registrations.flatMap((r) => (r.sessionIds || []).map(String))),
+  ];
+  if (!sessionIds.length) return new Map();
+
+  const sessions = await EventSession.find({ _id: { $in: sessionIds }, tenantId })
+    .select("label date startTime endTime isVirtual")
+    .lean();
+  return new Map(sessions.map((session) => [String(session._id), session]));
+}
+
+const COURSE_DELIVERY_MODE_LABELS = { online: "Online", "in-person": "In-Person", blended: "Blended" };
+
+/** "Virtual" / "In-Person" / "Hybrid" (mixed per-session format) for an event. */
+function deriveEventFormat(event, sessions) {
+  if (!event) return null;
+  if (!sessions.length) return event.isVirtual ? "Virtual" : "In-Person";
+  const flags = new Set(sessions.map((s) => Boolean(s.isVirtual ?? event.isVirtual)));
+  if (flags.size > 1) return "Hybrid";
+  return flags.has(true) ? "Virtual" : "In-Person";
+}
+
+/** past: already finished. upcoming: hasn't started. current: in progress (or no end date to compare). */
+function classifyTiming(startDate, endDate) {
+  const now = Date.now();
+  const start = startDate ? new Date(startDate).getTime() : null;
+  const end = endDate ? new Date(endDate).getTime() : start;
+  if (end != null && end < now) return "past";
+  if (start != null && start > now) return "upcoming";
+  return "current";
+}
+
+/** Merge event/course + session fields onto each registration for the portal's "My Events" list. */
+function enrichRegistrationsForProfile(registrations, eventsById, coursesById, sessionsById, eventTypesById) {
+  return registrations.map((reg) => {
+    const isEvent = reg.registrationType === "event";
+    const parent = isEvent
+      ? reg.eventId
+        ? eventsById.get(String(reg.eventId))
+        : null
+      : reg.courseId
+        ? coursesById.get(String(reg.courseId))
+        : null;
+    const sessions = (reg.sessionIds || [])
+      .map((id) => sessionsById.get(String(id)))
+      .filter(Boolean);
+    const eventType = isEvent && parent?.eventTypeId ? eventTypesById.get(String(parent.eventTypeId)) : null;
+
+    return {
+      ...reg,
+      title: parent?.title || null,
+      startDate: parent?.startDate || null,
+      endDate: parent?.endDate || null,
+      // parentStatus (Draft/Published/Cancelled/Completed on the Event/Course)
+      // is distinct from reg.status (this registration's pending/confirmed/
+      // cancelled) - keep both, don't let one clobber the other.
+      parentStatus: parent?.status || null,
+      venue: isEvent ? parent?.venue || null : null,
+      isVirtual: isEvent ? (parent?.isVirtual ?? null) : null,
+      imageUrl: isEvent ? parent?.imageUrl || null : null,
+      // "Virtual" / "In-Person" / "Hybrid" for events; delivery mode label for courses.
+      format: isEvent
+        ? deriveEventFormat(parent, sessions)
+        : parent?.deliveryMode
+          ? COURSE_DELIVERY_MODE_LABELS[parent.deliveryMode] || parent.deliveryMode
+          : null,
+      deliveryMode: !isEvent ? parent?.deliveryMode || null : null,
+      eventTypeId: isEvent ? parent?.eventTypeId || null : null,
+      eventTypeName: isEvent ? eventType?.name || null : null,
+      eventCategoryLookupCode: isEvent ? parent?.eventCategoryLookupCode || null : null,
+      cpdCredits: isEvent ? (parent?.cpdCredits ?? null) : null,
+      accreditationBody: isEvent ? parent?.accreditationBody || null : null,
+      certificationType: isEvent ? parent?.certificationType || null : null,
+      sessions,
+      timing: classifyTiming(parent?.startDate, parent?.endDate),
+    };
+  });
 }
 
 /** Merge event fields onto each registration for grid display (Event Name/Type/Category/Date). */
@@ -419,6 +541,8 @@ async function listRegistrations(req, res, next) {
 async function getRegistrationsByProfile(req, res, next) {
   try {
     const { tenantId } = req.ctx;
+    const { timing } = req.query; // optional: past | current | upcoming
+
     const registrations = await Registration.find({
       tenantId,
       profileId: req.params.profileId,
@@ -426,7 +550,29 @@ async function getRegistrationsByProfile(req, res, next) {
     })
       .sort({ createdAt: -1 })
       .lean();
-    return res.status(200).json({ success: true, data: registrations });
+
+    const [eventsById, coursesById, sessionsById] = await Promise.all([
+      getEventsMapForRegistrations({ tenantId, registrations }),
+      getCoursesMapForRegistrations({ tenantId, registrations }),
+      getSessionsMapForRegistrations({ tenantId, registrations }),
+    ]);
+
+    // Event Type is stored as a raw Lookup _id on Event (no cached label, unlike
+    // eventCategoryLookupCode) - resolve the distinct ids referenced here to
+    // display names in one batched call. Never let a user-service hiccup break
+    // the whole "My Events" list - fall back to ids-only if it fails.
+    const eventTypeIds = [...new Set([...eventsById.values()].map((ev) => ev.eventTypeId).filter(Boolean))];
+    const eventTypesById = eventTypeIds.length
+      ? await resolveLookupNamesByIds(eventTypeIds, req, tenantId).catch(() => new Map())
+      : new Map();
+
+    let enriched = enrichRegistrationsForProfile(registrations, eventsById, coursesById, sessionsById, eventTypesById);
+
+    if (["past", "current", "upcoming"].includes(timing)) {
+      enriched = enriched.filter((reg) => reg.timing === timing);
+    }
+
+    return res.status(200).json({ success: true, data: enriched });
   } catch (error) {
     return next(
       AppError.internalServerError(error.message || "Failed to fetch registrations for profile"),

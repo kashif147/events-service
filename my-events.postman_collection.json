@@ -1,0 +1,89 @@
+{
+  "info": {
+    "name": "Events Service - My Events (Registrations by Profile)",
+    "description": "GET /api/registrations/profile/:profileId - every registration (event or course) for a profile, enriched with: title, startDate, endDate, venue, format (Virtual/In-Person/Hybrid derived from isVirtual + per-session overrides), eventTypeId + eventTypeName (resolved from user-service Lookup), eventCategoryLookupCode, cpdCredits, accreditationBody, certificationType, imageUrl, deliveryMode (courses), parentStatus (the Event/Course's own Draft/Published/Cancelled/Completed status - distinct from the registration's own pending/confirmed/cancelled status), and registered sessions. Each row also gets a computed `timing` field (past/current/upcoming); pass ?timing= to filter server-side instead of client-side.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4011", "type": "string" },
+    { "key": "authToken", "value": "", "type": "string" },
+    { "key": "profileId", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Get Registrations by Profile (My Events) - all",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/registrations/profile/{{profileId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "registrations", "profile", "{{profileId}}"]
+        }
+      },
+      "response": [
+        {
+          "name": "200 OK - example",
+          "originalRequest": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations/profile/{{profileId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations", "profile", "{{profileId}}"]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"_id\": \"66f1a2b3c4d5e6f7a8b9c0d1\",\n      \"tenantId\": \"tenant-1\",\n      \"registrationType\": \"event\",\n      \"eventId\": \"66f0a1b2c3d4e5f6a7b8c9d0\",\n      \"courseId\": null,\n      \"sessionIds\": [\"66f0a1b2c3d4e5f6a7b8c9d5\"],\n      \"quantity\": 1,\n      \"priceCategory\": \"standard\",\n      \"profileId\": \"66e0a1b2c3d4e5f6a7b8c9aa\",\n      \"membershipNumber\": \"M123456\",\n      \"isMemberAtRegistration\": true,\n      \"amount\": 50,\n      \"currency\": \"eur\",\n      \"paymentMethod\": \"stripe\",\n      \"paymentStatus\": \"paid\",\n      \"status\": \"confirmed\",\n      \"registeredVia\": \"portal\",\n      \"createdAt\": \"2026-06-01T09:00:00.000Z\",\n\n      \"title\": \"Annual Nursing Conference\",\n      \"startDate\": \"2026-09-15T09:00:00.000Z\",\n      \"endDate\": \"2026-09-15T17:00:00.000Z\",\n      \"parentStatus\": \"Published\",\n      \"venue\": \"Croke Park Conference Centre\",\n      \"isVirtual\": false,\n      \"format\": \"In-Person\",\n      \"imageUrl\": \"https://storage.example.com/events/annual-conf.png\",\n      \"deliveryMode\": null,\n      \"eventTypeId\": \"66e5a1b2c3d4e5f6a7b8c9bb\",\n      \"eventTypeName\": \"Conference\",\n      \"eventCategoryLookupCode\": \"CPD\",\n      \"cpdCredits\": 6,\n      \"accreditationBody\": \"NMBI\",\n      \"certificationType\": \"attendance\",\n      \"sessions\": [\n        {\n          \"_id\": \"66f0a1b2c3d4e5f6a7b8c9d5\",\n          \"label\": \"Day 1\",\n          \"date\": \"2026-09-15T00:00:00.000Z\",\n          \"startTime\": \"09:00\",\n          \"endTime\": \"17:00\",\n          \"isVirtual\": false\n        }\n      ],\n      \"timing\": \"upcoming\"\n    },\n    {\n      \"_id\": \"66f1a2b3c4d5e6f7a8b9c0d2\",\n      \"tenantId\": \"tenant-1\",\n      \"registrationType\": \"course\",\n      \"eventId\": null,\n      \"courseId\": \"66f0a1b2c3d4e5f6a7b8c9e0\",\n      \"sessionIds\": [],\n      \"quantity\": 1,\n      \"priceCategory\": \"standard\",\n      \"profileId\": \"66e0a1b2c3d4e5f6a7b8c9aa\",\n      \"amount\": 0,\n      \"currency\": \"eur\",\n      \"paymentMethod\": \"comp\",\n      \"paymentStatus\": \"waived\",\n      \"status\": \"confirmed\",\n      \"registeredVia\": \"portal\",\n      \"createdAt\": \"2026-01-10T09:00:00.000Z\",\n\n      \"title\": \"Manual Handling Refresher\",\n      \"startDate\": \"2025-10-01T00:00:00.000Z\",\n      \"endDate\": \"2025-10-31T00:00:00.000Z\",\n      \"parentStatus\": \"Completed\",\n      \"venue\": null,\n      \"isVirtual\": null,\n      \"format\": \"Online\",\n      \"imageUrl\": null,\n      \"deliveryMode\": \"online\",\n      \"eventTypeId\": null,\n      \"eventTypeName\": null,\n      \"eventCategoryLookupCode\": null,\n      \"cpdCredits\": null,\n      \"accreditationBody\": null,\n      \"certificationType\": null,\n      \"sessions\": [],\n      \"timing\": \"past\"\n    }\n  ]\n}"
+        }
+      ]
+    },
+    {
+      "name": "Get Registrations by Profile (My Events) - upcoming only",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/registrations/profile/{{profileId}}?timing=upcoming",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "registrations", "profile", "{{profileId}}"],
+          "query": [
+            { "key": "timing", "value": "upcoming", "description": "past | current | upcoming" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Registrations by Profile (My Events) - past only",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/registrations/profile/{{profileId}}?timing=past",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "registrations", "profile", "{{profileId}}"],
+          "query": [
+            { "key": "timing", "value": "past", "description": "past | current | upcoming" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Registrations by Profile (My Events) - current only",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/registrations/profile/{{profileId}}?timing=current",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "registrations", "profile", "{{profileId}}"],
+          "query": [
+            { "key": "timing", "value": "current", "description": "past | current | upcoming" }
+          ]
+        }
+      }
+    }
+  ]
+}

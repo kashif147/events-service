@@ -69,7 +69,34 @@ async function resolveEventCategoryLookup(eventCategoryLookupId, req, tenantId) 
   return { id: match._id, code: match.code };
 }
 
+/**
+ * Resolve a batch of arbitrary Lookup _ids (e.g. Event Type) to their display
+ * name/code in one call - GET /api/lookup isn't filterable server-side, so
+ * fetch the full tenant list once and pick out the ids we need client-side
+ * (same approach as fetchEventCategoryLookups above).
+ */
+async function resolveLookupNamesByIds(ids, req, tenantId) {
+  const idSet = new Set((ids || []).filter(Boolean).map(String));
+  if (!idSet.size) return new Map();
+
+  const response = await axios.get(`${USER_SERVICE_URL}/api/lookup`, {
+    headers: buildHeaders(req, tenantId),
+    timeout: 15000,
+  });
+  const lookups = response.data || [];
+
+  const map = new Map();
+  for (const lookup of lookups) {
+    const id = String(lookup._id);
+    if (idSet.has(id)) {
+      map.set(id, { code: lookup.code, name: lookup.DisplayName || lookup.lookupname });
+    }
+  }
+  return map;
+}
+
 module.exports = {
   fetchEventCategoryLookups,
   resolveEventCategoryLookup,
+  resolveLookupNamesByIds,
 };

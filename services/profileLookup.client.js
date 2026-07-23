@@ -117,4 +117,37 @@ async function getProfileMembershipNumber({ tenantId, profileId }) {
   }
 }
 
-module.exports = { findOrCreateAttendeeProfile, checkAttendeeDuplicates, getProfileMembershipNumber };
+/**
+ * Compensating rollback for a Profile findOrCreateAttendeeProfile just
+ * created in THIS SAME registration attempt, called when a later step (e.g.
+ * payment intent creation) fails - so the failed attempt never leaves a
+ * half-created Profile behind. Best-effort: swallows its own errors so a
+ * rollback failure never masks the original error being surfaced to the CRM.
+ */
+async function deleteAttendeeProfile({ tenantId, profileId }) {
+  try {
+    const response = await axios.post(
+      `${PROFILE_SERVICE_URL}/api/profile/internal/rollback-attendee-profile`,
+      { tenantId, profileId },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-request": "true",
+          "x-tenant-id": tenantId || "",
+        },
+        timeout: 15000,
+      },
+    );
+    return response.data?.data;
+  } catch (error) {
+    console.error("[profileLookup] deleteAttendeeProfile (rollback) failed:", error.message);
+    return { deleted: false, reason: "request_failed" };
+  }
+}
+
+module.exports = {
+  findOrCreateAttendeeProfile,
+  checkAttendeeDuplicates,
+  getProfileMembershipNumber,
+  deleteAttendeeProfile,
+};
