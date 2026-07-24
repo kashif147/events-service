@@ -8,6 +8,7 @@ const {
   findOrCreateAttendeeProfile,
   checkAttendeeDuplicates,
   getProfileMembershipNumber,
+  syncAttendeeProfileFields,
   deleteAttendeeProfile,
 } = require("../services/profileLookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
@@ -17,6 +18,32 @@ const {
   resolveAmount,
   resolveLineItemsAmount,
 } = require("../services/pricingResolution.service.js");
+
+/**
+ * Downstream axios calls (account-service, profile-service) can legitimately
+ * reject with a 4xx of their own (e.g. account-service's 409 when a Payment
+ * write trips a unique index) - surface that real status/message instead of
+ * flattening every non-AppError, non-Mongo-duplicate error into an opaque
+ * 500 "Request failed with status code 409".
+ */
+function appErrorFromUpstream(error, fallbackMessage) {
+  if (error?.isAxiosError && error.response) {
+    const status = error.response.status;
+    const upstreamMessage =
+      error.response.data?.error?.message || error.response.data?.message || error.message;
+    if (status >= 400 && status < 500) {
+      return new AppError(
+        upstreamMessage || fallbackMessage,
+        status,
+        error.response.data?.error?.code || "UPSTREAM_ERROR",
+        error.response.data?.error && typeof error.response.data.error === "object"
+          ? { details: error.response.data.error }
+          : {},
+      );
+    }
+  }
+  return AppError.internalServerError(error?.message || fallbackMessage);
+}
 
 const LINE_ITEM_TIER_KEYS = [
   "MEMBER",
@@ -183,6 +210,7 @@ async function createRegistration(req, res, next) {
         phone: profile.phone,
         workLocation: profile.workLocation,
         grade: profile.grade,
+        nmbiNumber: profile.nmbiNumber,
         addressLine1: profile.addressLine1,
         addressLine2: profile.addressLine2,
         townCity: profile.townCity,
@@ -199,6 +227,11 @@ async function createRegistration(req, res, next) {
       // server-side rather than trusting the frontend to have sent it, so the
       // resulting payment reliably attaches to that member's own ledger.
       membershipNumber = await getProfileMembershipNumber({ tenantId, profileId });
+      // Best-effort: fill in NMBI No. on the existing profile only if it's
+      // currently blank there - never overwrites what's already on file.
+      if (profile.nmbiNumber) {
+        await syncAttendeeProfileFields({ tenantId, profileId, nmbiNumber: profile.nmbiNumber });
+      }
     }
 
     // Everything from here on can still fail (pricing, the Registration
@@ -370,7 +403,7 @@ async function createRegistration(req, res, next) {
         ),
       );
     }
-    return next(AppError.internalServerError(error.message || "Failed to create registration"));
+    return next(appErrorFromUpstream(error, "Failed to create registration"));
   }
 }
 
@@ -534,7 +567,7 @@ async function listRegistrations(req, res, next) {
     const enriched = enrichRegistrationsWithEvent(registrations, eventsById);
     return res.status(200).json({ success: true, data: enriched });
   } catch (error) {
-    return next(AppError.internalServerError(error.message || "Failed to list registrations"));
+    return next(appErrorFromUpstream(error, "Failed to list registrations"));
   }
 }
 
@@ -574,9 +607,7 @@ async function getRegistrationsByProfile(req, res, next) {
 
     return res.status(200).json({ success: true, data: enriched });
   } catch (error) {
-    return next(
-      AppError.internalServerError(error.message || "Failed to fetch registrations for profile"),
-    );
+    return next(appErrorFromUpstream(error, "Failed to fetch registrations for profile"));
   }
 }
 
@@ -597,7 +628,7 @@ async function cancelRegistration(req, res, next) {
 
     return res.status(200).json({ success: true, data: registration });
   } catch (error) {
-    return next(AppError.internalServerError(error.message || "Failed to cancel registration"));
+    return next(appErrorFromUpstream(error, "Failed to cancel registration"));
   }
 }
 
@@ -653,7 +684,7 @@ async function approveRegistration(req, res, next) {
     return res.status(200).json({ success: true, data: registration });
   } catch (error) {
     if (error instanceof AppError) return next(error);
-    return next(AppError.internalServerError(error.message || "Failed to approve registration"));
+    return next(appErrorFromUpstream(error, "Failed to approve registration"));
   }
 }
 
@@ -681,7 +712,7 @@ async function checkNewAttendeeDuplicates(req, res, next) {
     });
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
-    return next(AppError.internalServerError(error.message || "Failed to check attendee duplicates"));
+    return next(appErrorFromUpstream(error, "Failed to check attendee duplicates"));
   }
 }
 

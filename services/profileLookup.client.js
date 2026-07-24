@@ -17,6 +17,7 @@ async function findOrCreateAttendeeProfile({
   phone,
   workLocation,
   grade,
+  nmbiNumber,
   addressLine1,
   addressLine2,
   townCity,
@@ -34,6 +35,7 @@ async function findOrCreateAttendeeProfile({
       phone,
       workLocation,
       grade,
+      nmbiNumber,
       addressLine1,
       addressLine2,
       townCity,
@@ -118,6 +120,37 @@ async function getProfileMembershipNumber({ tenantId, profileId }) {
 }
 
 /**
+ * Best-effort fill-in of a blank professionalDetails.nmbiNumber on an
+ * already-resolved Profile (profile.profileId supplied by the caller - the
+ * CRM "search and select an existing profile" attendee-registration path,
+ * which never goes through findOrCreateAttendeeProfile's own by-email
+ * backfill since it already has a profileId). Swallows its own errors like
+ * getProfileMembershipNumber above, so a sync hiccup never blocks
+ * registration - never overwrites a value the profile already has.
+ */
+async function syncAttendeeProfileFields({ tenantId, profileId, nmbiNumber }) {
+  if (!nmbiNumber) return null;
+  try {
+    const response = await axios.post(
+      `${PROFILE_SERVICE_URL}/api/profile/internal/attendee-profile-fields-sync`,
+      { tenantId, profileId, nmbiNumber },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-request": "true",
+          "x-tenant-id": tenantId || "",
+        },
+        timeout: 15000,
+      },
+    );
+    return response.data?.data;
+  } catch (error) {
+    console.error("[profileLookup] syncAttendeeProfileFields failed:", error.message);
+    return null;
+  }
+}
+
+/**
  * Compensating rollback for a Profile findOrCreateAttendeeProfile just
  * created in THIS SAME registration attempt, called when a later step (e.g.
  * payment intent creation) fails - so the failed attempt never leaves a
@@ -149,5 +182,6 @@ module.exports = {
   findOrCreateAttendeeProfile,
   checkAttendeeDuplicates,
   getProfileMembershipNumber,
+  syncAttendeeProfileFields,
   deleteAttendeeProfile,
 };
