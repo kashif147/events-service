@@ -5,10 +5,8 @@ const Course = require("../models/course.model.js");
 const Registration = require("../models/registration.model.js");
 const { AppError } = require("../errors/AppError.js");
 const {
-  findOrCreateAttendeeProfile,
   checkAttendeeDuplicates,
   getProfileMembershipNumber,
-  syncAttendeeProfileFields,
 } = require("../services/profileLookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
 const { resolveLookupNamesByIds } = require("../services/lookup.client.js");
@@ -17,6 +15,12 @@ const {
   resolveAmount,
   resolveLineItemsAmount,
 } = require("../services/pricingResolution.service.js");
+const {
+  claimRegistrationForApproval,
+  releaseRegistrationClaim,
+  finalizeRegistrationApproval,
+  isEligibleForAutoApproval,
+} = require("../services/registrationApproval.service.js");
 
 /**
  * Downstream axios calls (account-service, profile-service) can legitimately
@@ -64,9 +68,7 @@ function legacyPriceCategoryForTierKey(tierKey) {
 const {
   createRegistrationPaymentIntent,
   postManualRegistrationPayment,
-  capturePaymentIntent,
   cancelPaymentIntent,
-  postManualRegistrationPaymentToGL,
   voidManualRegistrationPayment,
 } = require("../services/accountService.client.js");
 const {
@@ -393,7 +395,28 @@ async function createRegistration(req, res, next) {
         await publishRegistrationCreated(registration, tenantId);
         // No publishRegistrationConfirmed here anymore - manual/comp/invoice
         // payments are recorded (not posted) at intake now too; confirmation
-        // waits for CRM approval, same as Stripe.
+        // waits for approval - immediately below for an unambiguous CRM
+        // registration, otherwise from a CRM reviewer later (see
+        // isEligibleForAutoApproval).
+        if (isEligibleForAutoApproval(registration)) {
+          const claimed = await claimRegistrationForApproval({ id: registration._id, tenantId });
+          if (claimed) {
+            try {
+              registration = await finalizeRegistrationApproval({
+                claimed,
+                req,
+                tenantId,
+                reviewerId: registeredByUserId || null,
+              });
+            } catch (autoApproveError) {
+              // Registration + payment already succeeded - don't fail the
+              // whole request over an auto-approve hiccup. Release the claim
+              // and leave it pending_review for a CRM user to approve
+              // manually instead.
+              await releaseRegistrationClaim({ id: claimed._id, tenantId });
+            }
+          }
+        }
       }
 
       return res.status(201).json({
@@ -671,11 +694,7 @@ async function approveRegistration(req, res, next) {
   try {
     const { decision, candidateProfileId } = req.body || {};
 
-    claimed = await Registration.findOneAndUpdate(
-      { _id: req.params.id, tenantId, approvalStatus: "pending_review" },
-      { $set: { approvalStatus: "processing" } },
-      { new: true },
-    );
+    claimed = await claimRegistrationForApproval({ id: req.params.id, tenantId });
     if (!claimed) {
       return next(
         AppError.badRequest(
@@ -684,117 +703,21 @@ async function approveRegistration(req, res, next) {
       );
     }
 
-    const review = claimed.duplicateReview || {};
-    let finalProfileId = null;
+    const result = await finalizeRegistrationApproval({
+      claimed,
+      decision,
+      candidateProfileId,
+      req,
+      tenantId,
+      reviewerId: req.ctx?.userId || req.userId || null,
+    });
 
-    if (review.status === "CONFIRMED_LINK" || review.status === "EXACT_MATCH") {
-      finalProfileId = review.matchedProfileId;
-    } else if (review.status === "POTENTIAL_MATCH") {
-      if (decision === "LINK") {
-        if (!candidateProfileId) {
-          throw AppError.badRequest("candidateProfileId is required for a LINK decision");
-        }
-        finalProfileId = candidateProfileId;
-      } else if (decision !== "CREATE_NEW") {
-        throw AppError.badRequest(
-          "decision must be 'LINK' or 'CREATE_NEW' - this registration has a potential duplicate match awaiting review",
-        );
-      }
-    }
-    // NO_MATCH (or anything else) falls through with finalProfileId still
-    // null - create fresh below, no ambiguity to resolve.
-
-    const snap = claimed.attendeeSnapshot || {};
-    let finalMembershipNumber = null;
-    if (finalProfileId) {
-      finalMembershipNumber = await getProfileMembershipNumber({ tenantId, profileId: finalProfileId });
-      if (snap.nmbiNumber) {
-        await syncAttendeeProfileFields({ tenantId, profileId: finalProfileId, nmbiNumber: snap.nmbiNumber });
-      }
-    } else {
-      const resolved = await findOrCreateAttendeeProfile({
-        tenantId,
-        email: snap.email,
-        firstName: snap.firstName,
-        lastName: snap.lastName,
-        phone: snap.phone,
-        workLocation: snap.workLocation,
-        grade: snap.grade,
-        nmbiNumber: snap.nmbiNumber,
-        addressLine1: snap.addressLine1,
-        addressLine2: snap.addressLine2,
-        townCity: snap.townCity,
-        countyState: snap.countyState,
-        eircode: snap.eircode,
-        country: snap.country,
-      });
-      finalProfileId = resolved.profileId;
-      finalMembershipNumber = resolved.membershipNumber;
-    }
-
-    let finalPaymentStatus;
-    if (claimed.paymentMethod === "stripe") {
-      if (!claimed.stripePaymentIntentId) {
-        throw AppError.conflict("This registration has no Stripe PaymentIntent to capture.");
-      }
-      const captureResult = await capturePaymentIntent({
-        req,
-        tenantId,
-        paymentIntentId: claimed.stripePaymentIntentId,
-        profileId: finalProfileId,
-        membershipNumber: finalMembershipNumber,
-      });
-      if (captureResult?.status !== "succeeded") {
-        throw AppError.conflict("Payment capture did not succeed - registration was not approved.");
-      }
-      finalPaymentStatus = "succeeded";
-    } else {
-      if (!claimed.paymentId) {
-        throw AppError.conflict("This registration has no recorded payment to post.");
-      }
-      await postManualRegistrationPaymentToGL({
-        req,
-        tenantId,
-        paymentId: claimed.paymentId,
-        method: claimed.paymentMethod,
-        profileId: finalProfileId,
-        membershipNumber: finalMembershipNumber,
-      });
-      // Matches the pre-approval-gating mapping this service always used:
-      // comp -> waived, manual/invoice -> manual.
-      finalPaymentStatus = claimed.paymentMethod === "comp" ? "waived" : "manual";
-    }
-
-    claimed.profileId = finalProfileId;
-    claimed.membershipNumber = finalMembershipNumber;
-    claimed.paymentStatus = finalPaymentStatus;
-    claimed.status = "confirmed";
-    claimed.approvalStatus = "approved";
-    claimed.duplicateReview = {
-      ...review,
-      status:
-        review.status === "POTENTIAL_MATCH"
-          ? decision === "LINK"
-            ? "CONFIRMED_LINK"
-            : "NO_MATCH"
-          : review.status,
-      matchedProfileId: finalProfileId,
-      reviewedBy: req.ctx?.userId || req.userId || null,
-      reviewedAt: new Date(),
-    };
-    await claimed.save();
-
-    await publishRegistrationConfirmed(claimed, tenantId);
-
-    return res.status(200).json({ success: true, data: claimed });
+    return res.status(200).json({ success: true, data: result });
   } catch (error) {
     // Release the claim so a fixable failure (e.g. a transient account-service
     // error) doesn't leave the registration stuck in "processing" forever.
     if (claimed) {
-      await Registration.updateOne(
-        { _id: claimed._id, tenantId, approvalStatus: "processing" },
-        { $set: { approvalStatus: "pending_review" } },
-      ).catch(() => {});
+      await releaseRegistrationClaim({ id: claimed._id, tenantId });
     }
     if (error instanceof AppError) return next(error);
     return next(appErrorFromUpstream(error, "Failed to approve registration"));
