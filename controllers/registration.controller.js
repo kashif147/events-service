@@ -28,20 +28,28 @@ const {
  * write trips a unique index) - surface that real status/message instead of
  * flattening every non-AppError, non-Mongo-duplicate error into an opaque
  * 500 "Request failed with status code 409".
+ *
+ * profile-service/events-service and account-service use two DIFFERENT error
+ * envelope shapes - {success:false, error:{message,code,...}} vs account-
+ * service's {status:"fail", message, code, details} (response.mw.js's
+ * res.appError, which puts the field/value that actually collided on
+ * `details`, not `error`) - check both rather than assuming one, otherwise
+ * the one upstream detail that actually explains a 409 (which Mongo field
+ * collided) silently gets dropped for account-service specifically.
  */
 function appErrorFromUpstream(error, fallbackMessage) {
   if (error?.isAxiosError && error.response) {
     const status = error.response.status;
-    const upstreamMessage =
-      error.response.data?.error?.message || error.response.data?.message || error.message;
+    const body = error.response.data || {};
+    const upstreamMessage = body.error?.message || body.message || error.message;
+    const upstreamCode = body.error?.code || body.code || "UPSTREAM_ERROR";
+    const upstreamDetails = body.error && typeof body.error === "object" ? body.error : body.details;
     if (status >= 400 && status < 500) {
       return new AppError(
         upstreamMessage || fallbackMessage,
         status,
-        error.response.data?.error?.code || "UPSTREAM_ERROR",
-        error.response.data?.error && typeof error.response.data.error === "object"
-          ? { details: error.response.data.error }
-          : {},
+        upstreamCode,
+        upstreamDetails && typeof upstreamDetails === "object" ? { details: upstreamDetails } : {},
       );
     }
   }
