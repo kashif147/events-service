@@ -106,6 +106,11 @@ const RegistrationSchema = new mongoose.Schema(
       firstName: { type: String, default: null },
       lastName: { type: String, default: null },
       email: { type: String, default: null },
+      // Lowercase/trimmed copy of email, set alongside it at intake - the
+      // real identity signal available BEFORE profileId is resolved (see the
+      // normalizedEmail-based unique indexes below), so it needs to be a
+      // real indexed field rather than relying on case-sensitive raw email.
+      normalizedEmail: { type: String, default: null },
       phone: { type: String, default: null },
       workLocation: { type: String, default: null },
       grade: { type: String, default: null },
@@ -169,6 +174,15 @@ const RegistrationSchema = new mongoose.Schema(
 // treats every profileId:null document as colliding with every other one,
 // which would 409 the second pending-review registration for the same
 // event/course regardless of who the (not-yet-resolved) attendee is.
+//
+// That fix has a side effect worth calling out: since EVERY registration now
+// starts with profileId:null (resolved only at approval), these two indexes
+// never actually apply at intake anymore - nothing in the DB stops two
+// registrations for the same event/course + same attendee being created
+// seconds apart (a client double-click, a network-level retry, anything),
+// each with its own Stripe PaymentIntent. The normalizedEmail-based indexes
+// below restore that guarantee using the identity signal that actually IS
+// known at intake, before profileId exists.
 RegistrationSchema.index(
   { tenantId: 1, eventId: 1, profileId: 1 },
   {
@@ -187,6 +201,28 @@ RegistrationSchema.index(
     partialFilterExpression: {
       courseId: { $type: "objectId" },
       profileId: { $type: "string" },
+      isActive: true,
+    },
+  },
+);
+RegistrationSchema.index(
+  { tenantId: 1, eventId: 1, "attendeeSnapshot.normalizedEmail": 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      eventId: { $type: "objectId" },
+      "attendeeSnapshot.normalizedEmail": { $type: "string" },
+      isActive: true,
+    },
+  },
+);
+RegistrationSchema.index(
+  { tenantId: 1, courseId: 1, "attendeeSnapshot.normalizedEmail": 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      courseId: { $type: "objectId" },
+      "attendeeSnapshot.normalizedEmail": { $type: "string" },
       isActive: true,
     },
   },

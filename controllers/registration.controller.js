@@ -343,6 +343,7 @@ async function createRegistration(req, res, next) {
           firstName: profile.firstName || null,
           lastName: profile.lastName || null,
           email: profile.email,
+          normalizedEmail: String(profile.email || "").trim().toLowerCase() || null,
           phone: profile.phone || null,
           workLocation: profile.workLocation || null,
           grade: profile.grade || null,
@@ -423,13 +424,17 @@ async function createRegistration(req, res, next) {
     }
   } catch (error) {
     if (error instanceof AppError) return next(error);
-    // Registration has a unique {tenantId, eventId/courseId, profileId} index -
-    // one profile can only have one registration per event/course. Surface
-    // that as a clear message instead of the raw Mongo E11000 text.
+    // Registration has unique {tenantId, eventId/courseId, profileId} and
+    // {tenantId, eventId/courseId, attendeeSnapshot.normalizedEmail} indexes -
+    // one profile/attendee email can only have one ACTIVE registration per
+    // event/course. The email-based index is what actually catches a
+    // duplicate submission at intake (double-click, network retry, etc.),
+    // since profileId is always null until approval. Surface a clear
+    // message instead of the raw Mongo E11000 text either way.
     if (error?.code === 11000) {
       return next(
         AppError.badRequest(
-          "This profile is already registered for this event. Cancel their existing registration first if you need to change the ticket(s).",
+          "This attendee is already registered for this event/course. Cancel the existing registration first if you need to change the ticket(s), or check for a duplicate submission.",
         ),
       );
     }

@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Events Service API",
-    "description": "Complete API collection for Events Service (events, sessions, courses, registrations, certificates, filter templates). All routes are mounted under /api and require authentication (either a gateway-forwarded JWT, or a direct Bearer token if AUTH_BYPASS is not enabled).",
+    "description": "Complete API collection for Events Service (events, sessions, courses, registrations, certificates, filter templates). All routes under /api require authentication (either a gateway-forwarded JWT, or a direct Bearer token if AUTH_BYPASS is not enabled). GET /health and GET /api are unauthenticated.\n\nRegistration/approval workflow (see Registrations folder): creating a registration never creates or links a Profile and never captures/posts payment - it only records a duplicate-detection verdict (duplicateReview.status: EXACT_MATCH | CONFIRMED_LINK | POTENTIAL_MATCH | NO_MATCH) and leaves the registration at approvalStatus 'pending_review'. A Profile is only created/linked, and payment only captured (Stripe) or posted to the GL (manual/comp/invoice), when a CRM user explicitly calls PUT /registrations/:id/approve - for a POTENTIAL_MATCH verdict this call must include a decision ('LINK' with candidateProfileId, or 'CREATE_NEW'). PUT /registrations/:id/reject releases the Stripe authorization (or voids the recorded-but-unposted manual/comp/invoice payment) and cancels the registration instead - no case auto-approves.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -19,6 +19,19 @@
       "name": "Health & Info",
       "item": [
         {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "No auth required. Returns { status: \"UP\" }."
+          }
+        },
+        {
           "name": "API Info",
           "request": {
             "method": "GET",
@@ -27,7 +40,8 @@
               "raw": "{{baseUrl}}/api",
               "host": ["{{baseUrl}}"],
               "path": ["api"]
-            }
+            },
+            "description": "No auth required. Returns a short service/endpoint summary."
           }
         }
       ]
@@ -310,10 +324,11 @@
                 { "key": "eventId", "value": "{{eventId}}" },
                 { "key": "courseId", "value": "", "disabled": true },
                 { "key": "profileId", "value": "", "disabled": true },
-                { "key": "status", "value": "confirmed", "description": "pending | confirmed | cancelled" },
+                { "key": "status", "value": "confirmed", "description": "pending | confirmed | cancelled | attended | no-show" },
                 { "key": "q", "value": "smith", "description": "matches attendee first/last name or email" }
               ]
-            }
+            },
+            "description": "Backs the CRM Attendees grid. Each row also carries approvalStatus (pending_review | processing | approved | rejected) and duplicateReview (status/matchedProfileId/matchSummary) - filter/sort client-side, there's no server-side limit."
           }
         },
         {
@@ -342,14 +357,15 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"registrationType\": \"event\",\n  \"eventId\": \"{{eventId}}\",\n  \"sessionIds\": [],\n  \"quantity\": 1,\n  \"profile\": {\n    \"profileId\": \"\",\n    \"email\": \"attendee@example.com\",\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\",\n    \"phone\": \"\",\n    \"workLocation\": \"\",\n    \"grade\": \"\",\n    \"addressLine1\": \"\",\n    \"addressLine2\": \"\",\n    \"townCity\": \"\",\n    \"countyState\": \"\",\n    \"eircode\": \"\",\n    \"country\": \"Ireland\"\n  },\n  \"paymentMethod\": \"stripe\",\n  \"registeredVia\": \"crm\",\n  \"registeredByUserId\": \"\"\n}",
+              "raw": "{\n  \"registrationType\": \"event\",\n  \"eventId\": \"{{eventId}}\",\n  \"sessionIds\": [],\n  \"quantity\": 1,\n  \"profile\": {\n    \"profileId\": \"\",\n    \"email\": \"attendee@example.com\",\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\",\n    \"phone\": \"\",\n    \"workLocation\": \"\",\n    \"grade\": \"\",\n    \"nmbiNumber\": \"\",\n    \"addressLine1\": \"\",\n    \"addressLine2\": \"\",\n    \"townCity\": \"\",\n    \"countyState\": \"\",\n    \"eircode\": \"\",\n    \"country\": \"Ireland\"\n  },\n  \"paymentMethod\": \"stripe\",\n  \"registeredVia\": \"crm\",\n  \"registeredByUserId\": \"\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{baseUrl}}/api/registrations",
               "host": ["{{baseUrl}}"],
               "path": ["api", "registrations"]
-            }
+            },
+            "description": "profile.profileId is optional - leave blank for a brand-new/not-yet-linked attendee (a server-side duplicate check runs against email/mobile/NMBI (exact) and name/DOB/eircode/address (fuzzy), recorded as duplicateReview on the response) or supply it when the CRM/portal already resolved which existing Profile this is (trusted as CONFIRMED_LINK, no re-scoring). paymentMethod: stripe | invoice | comp | manual. registeredVia: crm | portal | mobile. No Profile is created and no payment is captured/posted by this call - the registration is created at approvalStatus 'pending_review'; see Approve Registration below. For paymentMethod=stripe, the response's payment.clientSecret is confirmed client-side (stripe.confirmCardPayment) before approval - the intent uses manual capture."
           }
         },
         {
@@ -362,14 +378,15 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"registrationType\": \"event\",\n  \"eventId\": \"{{eventId}}\",\n  \"sessionIds\": [],\n  \"lineItems\": [\n    { \"tierKey\": \"MEMBER\", \"quantity\": 2 },\n    { \"tierKey\": \"STUDENT\", \"quantity\": 1 }\n  ],\n  \"profile\": {\n    \"email\": \"attendee@example.com\",\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\"\n  },\n  \"paymentMethod\": \"manual\",\n  \"registeredVia\": \"crm\"\n}",
+              "raw": "{\n  \"registrationType\": \"event\",\n  \"eventId\": \"{{eventId}}\",\n  \"sessionIds\": [],\n  \"lineItems\": [\n    { \"tierKey\": \"MEMBER\", \"quantity\": 2 },\n    { \"tierKey\": \"STUDENT\", \"quantity\": 1 }\n  ],\n  \"profile\": {\n    \"email\": \"attendee@example.com\",\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\",\n    \"nmbiNumber\": \"\"\n  },\n  \"paymentMethod\": \"manual\",\n  \"registeredVia\": \"crm\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{baseUrl}}/api/registrations",
               "host": ["{{baseUrl}}"],
               "path": ["api", "registrations"]
-            }
+            },
+            "description": "lineItems is events-only (not courses) and CRM-only. tierKey is one of MEMBER | NON_MEMBER | EARLY_BIRD_MEMBER | EARLY_BIRD_NON_MEMBER | STUDENT | GROUP_STUDENT. Same deferred profile/payment semantics as the single-tier request above."
           }
         },
         {
@@ -382,14 +399,15 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"attendee@example.com\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"phone\": \"\",\n  \"addressLine1\": \"\",\n  \"townCity\": \"\",\n  \"countyState\": \"\",\n  \"eircode\": \"\",\n  \"country\": \"Ireland\"\n}",
+              "raw": "{\n  \"email\": \"attendee@example.com\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"phone\": \"\",\n  \"nmbiNumber\": \"\",\n  \"addressLine1\": \"\",\n  \"townCity\": \"\",\n  \"countyState\": \"\",\n  \"eircode\": \"\",\n  \"country\": \"Ireland\"\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{baseUrl}}/api/registrations/attendee-duplicate-check",
               "host": ["{{baseUrl}}"],
               "path": ["api", "registrations", "attendee-duplicate-check"]
-            }
+            },
+            "description": "Read-only passthrough to profile-service's exact/fuzzy duplicate scoring - never creates a Profile. Not currently called by createRegistration itself (that runs the same check server-side at intake regardless); this endpoint exists for a caller that wants to pre-check before submitting. email is required. Resolves to { resolution: \"exact\", profileId, membershipNumber } | { resolution: \"review\", candidates: [{ profileId, membershipNumber, name, email, score, classification }] } | { resolution: \"none\" }."
           }
         },
         {
@@ -405,15 +423,37 @@
           }
         },
         {
-          "name": "Approve Registration (manual payment confirmation)",
+          "name": "Approve Registration (create/link profile + capture/post payment)",
           "request": {
             "method": "PUT",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"LINK\",\n  \"candidateProfileId\": \"\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
             "url": {
               "raw": "{{baseUrl}}/api/registrations/{{registrationId}}/approve",
               "host": ["{{baseUrl}}"],
               "path": ["api", "registrations", "{{registrationId}}", "approve"]
-            }
+            },
+            "description": "Only proceeds when the registration is currently approvalStatus 'pending_review' (atomically claimed to 'processing' first, released back to 'pending_review' on failure). Body is only required when duplicateReview.status === 'POTENTIAL_MATCH': decision is 'LINK' (with candidateProfileId - one of duplicateReview.matchSummary's profileId values) or 'CREATE_NEW'. For any other duplicateReview.status (EXACT_MATCH/CONFIRMED_LINK/NO_MATCH) the body is ignored - send {} or omit it. Resolves/creates/links the attendee Profile, captures the authorized Stripe PaymentIntent or posts the recorded manual/comp/invoice payment to the GL, and sets status='confirmed', approvalStatus='approved'."
+          }
+        },
+        {
+          "name": "Reject Registration",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations/{{registrationId}}/reject",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations", "{{registrationId}}", "reject"]
+            },
+            "description": "Only proceeds when the registration is currently approvalStatus 'pending_review'. No request body. Releases the Stripe authorization (cancelPaymentIntent - no refund, since nothing was captured) or voids the recorded-but-unposted manual/comp/invoice payment, then sets status='cancelled', approvalStatus='rejected', isActive=false and frees the seat. No Profile is ever created/touched by this call."
           }
         }
       ]

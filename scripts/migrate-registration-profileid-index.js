@@ -1,12 +1,31 @@
 /**
- * One-off migration for the profileId-scoped unique registration index (see
- * registration.model.js). Run once per environment after deploying the
- * defer-profile-resolution-to-approval change: drops and recreates the two
- * {tenantId, eventId|courseId, profileId} unique indexes with
- * profileId:{$type:"string"} added to the partialFilterExpression (Mongoose
- * does not auto-migrate a changed partialFilterExpression on an existing
- * index). Without this, every pending-review registration (profileId:null)
- * for the same event/course would collide on the old index and 409.
+ * One-off migration for registration.model.js's unique indexes. Run once per
+ * environment after deploying the defer-profile-resolution-to-approval
+ * change. Does two things:
+ *
+ * 1. Drops and recreates the two {tenantId, eventId|courseId, profileId}
+ *    unique indexes with profileId:{$type:"string"} added to the
+ *    partialFilterExpression (Mongoose does not auto-migrate a changed
+ *    partialFilterExpression on an existing index). Without this, every
+ *    pending-review registration (profileId:null) for the same event/course
+ *    would collide on the old index and 409.
+ *
+ * 2. Backfills attendeeSnapshot.normalizedEmail on existing documents, then
+ *    lets Registration.syncIndexes() create the two new
+ *    {tenantId, eventId|courseId, attendeeSnapshot.normalizedEmail} unique
+ *    indexes declared in the schema. These restore the duplicate-submission
+ *    guard that (1) above incidentally removed: since profileId is always
+ *    null at intake now, nothing else in the DB stops two registrations for
+ *    the same event/course + same attendee email being created seconds
+ *    apart (double-click, network retry, etc.), each with its own Stripe
+ *    PaymentIntent.
+ *
+ * IMPORTANT: if any ACTIVE duplicate registrations already exist for the
+ * same {tenantId, eventId|courseId, attendeeSnapshot.normalizedEmail} at
+ * the time this runs (e.g. from the exact bug being fixed here), index
+ * creation in step 2 will fail with an E11000 error - resolve those first
+ * (approve the one with a real captured/posted payment, reject the other)
+ * before running this script.
  *
  * Usage:
  *   node scripts/migrate-registration-profileid-index.js --env=staging
@@ -61,8 +80,33 @@ async function main() {
     }
   }
 
-  // Recreate from the current schema definition (already updated to include
-  // profileId:{$type:"string"} in partialFilterExpression).
+  // Backfill attendeeSnapshot.normalizedEmail on existing documents so
+  // pre-existing registrations are covered by the new duplicate-submission
+  // guard too, not just ones created after this deploy.
+  const backfillResult = await collection.updateMany(
+    {
+      "attendeeSnapshot.email": { $type: "string" },
+      $or: [
+        { "attendeeSnapshot.normalizedEmail": { $exists: false } },
+        { "attendeeSnapshot.normalizedEmail": null },
+      ],
+    },
+    [
+      {
+        $set: {
+          "attendeeSnapshot.normalizedEmail": {
+            $toLower: { $trim: { input: "$attendeeSnapshot.email" } },
+          },
+        },
+      },
+    ],
+  );
+  console.log(`Backfilled normalizedEmail on ${backfillResult.modifiedCount} document(s)`);
+
+  // Recreate from the current schema definition (profileId:{$type:"string"}
+  // in the partialFilterExpression, plus the two new normalizedEmail
+  // indexes) - will throw E11000 if active duplicate registrations still
+  // exist for the same event/course + attendee email; see the file header.
   await Registration.syncIndexes();
   console.log("Recreated indexes from current schema");
 
