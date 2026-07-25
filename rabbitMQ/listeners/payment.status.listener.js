@@ -2,12 +2,6 @@ const Registration = require("../../models/registration.model.js");
 const {
   publishRegistrationConfirmed,
 } = require("../publishers/registration.events.publisher.js");
-const {
-  claimRegistrationForApproval,
-  releaseRegistrationClaim,
-  finalizeRegistrationApproval,
-  isEligibleForAutoApproval,
-} = require("../../services/registrationApproval.service.js");
 
 /**
  * Handles account-service's "payments.events.status.updated.v1" routing key
@@ -41,35 +35,11 @@ async function handlePaymentStatusUpdated(payload) {
     await registration.save();
     await publishRegistrationConfirmed(registration, registration.tenantId);
   } else if (status === "requires_capture") {
-    // Stripe has authorized (held) the funds. For an unambiguous CRM
-    // registration (no potential duplicate to resolve), auto-capture and
-    // confirm right away - the payer only just finished entering their card,
-    // so from the CRM operator's perspective create+approve is one step.
-    // Portal/mobile registrations, and any CRM one with a POTENTIAL_MATCH,
-    // stay pending_review for a human to approve.
+    // Stripe has authorized (held) the funds. Capture only ever happens via
+    // an explicit PUT /:id/approve call (CRM's Add Attendee "Approve now"
+    // choice, or a later manual approval from view mode) - just reflect the
+    // authorization here, never auto-capture/approve from this webhook.
     if (registration.approvalStatus === "pending_review") {
-      if (isEligibleForAutoApproval(registration)) {
-        const claimed = await claimRegistrationForApproval({
-          id: registration._id,
-          tenantId: registration.tenantId,
-        });
-        if (claimed) {
-          try {
-            await finalizeRegistrationApproval({
-              claimed,
-              tenantId: registration.tenantId,
-              reviewerId: registration.registeredByUserId || null,
-            });
-            return;
-          } catch (autoApproveError) {
-            await releaseRegistrationClaim({ id: claimed._id, tenantId: registration.tenantId });
-            console.error(
-              "[events-service] auto-capture failed, left pending_review for manual approval",
-              { registrationId, error: autoApproveError.message },
-            );
-          }
-        }
-      }
       registration.paymentStatus = "authorized";
       await registration.save();
     }

@@ -39,14 +39,14 @@ async function releaseRegistrationClaim({ id, tenantId }) {
 }
 
 /**
- * Core of approval, shared by three call sites: the CRM-facing PUT
- * .../approve endpoint, createRegistration's CRM same-step auto-approve
- * (manual/comp/invoice), and the Stripe payment-status listener's
- * auto-capture-on-authorization (CRM Stripe registrations). Resolves/links/
- * creates the attendee Profile per the registration's duplicateReview
- * verdict (or an explicit reviewer decision for POTENTIAL_MATCH), captures
- * the authorized Stripe payment or posts the recorded manual/comp/invoice
- * payment to the GL, and confirms the registration.
+ * Core of approval - the CRM-facing PUT .../approve endpoint is the only
+ * caller, whether that call is fired immediately (the Add Attendee drawer's
+ * "Approve now" choice, right after create) or later from view mode.
+ * Resolves/links/creates the attendee Profile per the registration's
+ * duplicateReview verdict (or an explicit reviewer decision for
+ * POTENTIAL_MATCH), captures the authorized Stripe payment or posts the
+ * recorded manual/comp/invoice payment to the GL, and confirms the
+ * registration.
  *
  * `claimed` must already be the result of claimRegistrationForApproval - this
  * function does not claim/re-fetch it itself, so a caller can't accidentally
@@ -154,23 +154,8 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
   return claimed;
 }
 
-/**
- * A registration is eligible for same-step (no separate CRM click) approval
- * only when it was entered by CRM staff AND there's no ambiguity to resolve
- * - a POTENTIAL_MATCH always needs a human to pick LINK vs CREATE_NEW.
- * Portal/mobile self-service registrations are never auto-approved,
- * regardless of duplicateReview status - they always go through CRM review.
- */
-function isEligibleForAutoApproval(registration) {
-  return (
-    registration.registeredVia === "crm" &&
-    registration.duplicateReview?.status !== "POTENTIAL_MATCH"
-  );
-}
-
 module.exports = {
   claimRegistrationForApproval,
   releaseRegistrationClaim,
   finalizeRegistrationApproval,
-  isEligibleForAutoApproval,
 };

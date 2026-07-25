@@ -19,7 +19,6 @@ const {
   claimRegistrationForApproval,
   releaseRegistrationClaim,
   finalizeRegistrationApproval,
-  isEligibleForAutoApproval,
 } = require("../services/registrationApproval.service.js");
 
 /**
@@ -230,6 +229,7 @@ async function createRegistration(req, res, next) {
         firstName: profile.firstName,
         lastName: profile.lastName,
         phone: profile.phone,
+        nmbiNumber: profile.nmbiNumber,
         addressLine1: profile.addressLine1,
         townCity: profile.townCity,
         countyState: profile.countyState,
@@ -401,30 +401,11 @@ async function createRegistration(req, res, next) {
         registration.paymentId = manual?.paymentId || null;
         await registration.save();
         await publishRegistrationCreated(registration, tenantId);
-        // No publishRegistrationConfirmed here anymore - manual/comp/invoice
-        // payments are recorded (not posted) at intake now too; confirmation
-        // waits for approval - immediately below for an unambiguous CRM
-        // registration, otherwise from a CRM reviewer later (see
-        // isEligibleForAutoApproval).
-        if (isEligibleForAutoApproval(registration)) {
-          const claimed = await claimRegistrationForApproval({ id: registration._id, tenantId });
-          if (claimed) {
-            try {
-              registration = await finalizeRegistrationApproval({
-                claimed,
-                req,
-                tenantId,
-                reviewerId: registeredByUserId || null,
-              });
-            } catch (autoApproveError) {
-              // Registration + payment already succeeded - don't fail the
-              // whole request over an auto-approve hiccup. Release the claim
-              // and leave it pending_review for a CRM user to approve
-              // manually instead.
-              await releaseRegistrationClaim({ id: claimed._id, tenantId });
-            }
-          }
-        }
+        // No publishRegistrationConfirmed here - manual/comp/invoice payments
+        // are recorded (not posted) at intake; confirmation only ever happens
+        // via an explicit PUT /:id/approve call (CRM's Add Attendee "Approve
+        // now" choice, or a later manual approval from view mode) - never
+        // automatically here, regardless of registeredVia or duplicateReview.
       }
 
       return res.status(201).json({
@@ -791,8 +772,18 @@ async function rejectRegistration(req, res, next) {
 async function checkNewAttendeeDuplicates(req, res, next) {
   try {
     const { tenantId } = req.ctx;
-    const { email, firstName, lastName, phone, addressLine1, townCity, countyState, eircode, country } =
-      req.body || {};
+    const {
+      email,
+      firstName,
+      lastName,
+      phone,
+      nmbiNumber,
+      addressLine1,
+      townCity,
+      countyState,
+      eircode,
+      country,
+    } = req.body || {};
     if (!email) return next(AppError.badRequest("email is required"));
 
     const result = await checkAttendeeDuplicates({
@@ -801,6 +792,7 @@ async function checkNewAttendeeDuplicates(req, res, next) {
       firstName,
       lastName,
       phone,
+      nmbiNumber,
       addressLine1,
       townCity,
       countyState,

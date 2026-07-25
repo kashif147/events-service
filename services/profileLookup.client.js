@@ -67,6 +67,7 @@ async function checkAttendeeDuplicates({
   firstName,
   lastName,
   phone,
+  nmbiNumber,
   addressLine1,
   townCity,
   countyState,
@@ -75,7 +76,7 @@ async function checkAttendeeDuplicates({
 }) {
   const response = await axios.post(
     `${PROFILE_SERVICE_URL}/api/profile/internal/attendee-duplicate-check`,
-    { tenantId, email, firstName, lastName, phone, addressLine1, townCity, countyState, eircode, country },
+    { tenantId, email, firstName, lastName, phone, nmbiNumber, addressLine1, townCity, countyState, eircode, country },
     {
       headers: {
         "Content-Type": "application/json",
