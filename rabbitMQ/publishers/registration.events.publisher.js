@@ -29,8 +29,14 @@ function registrationPayload(registration) {
     registrationType: registration.registrationType,
     eventId: registration.eventId ? String(registration.eventId) : null,
     courseId: registration.courseId ? String(registration.courseId) : null,
-    profileId: registration.profileId,
+    // Null pre-approval - registrations are approval-gated now (see
+    // registration-flow.md), so profileId isn't resolved until
+    // approvalStatus:"approved". Consumers (audit-service,
+    // communication-service) must tolerate a null profileId on
+    // events.registration.created.v1 in particular.
+    profileId: registration.profileId || null,
     membershipNumber: registration.membershipNumber || null,
+    approvalStatus: registration.approvalStatus,
     attendeeSnapshot: registration.attendeeSnapshot,
     amount: registration.amount,
     currency: registration.currency,

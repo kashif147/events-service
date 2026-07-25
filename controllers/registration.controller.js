@@ -9,7 +9,6 @@ const {
   checkAttendeeDuplicates,
   getProfileMembershipNumber,
   syncAttendeeProfileFields,
-  deleteAttendeeProfile,
 } = require("../services/profileLookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
 const { resolveLookupNamesByIds } = require("../services/lookup.client.js");
@@ -65,6 +64,10 @@ function legacyPriceCategoryForTierKey(tierKey) {
 const {
   createRegistrationPaymentIntent,
   postManualRegistrationPayment,
+  capturePaymentIntent,
+  cancelPaymentIntent,
+  postManualRegistrationPaymentToGL,
+  voidManualRegistrationPayment,
 } = require("../services/accountService.client.js");
 const {
   publishRegistrationCreated,
@@ -196,56 +199,63 @@ async function createRegistration(req, res, next) {
       }
     }
 
-    // 2. Resolve (or create) the attendee's Profile - never enters the
-    // membership application pipeline.
-    let profileId = profile.profileId;
-    let membershipNumber = null;
-    let profileWasCreated = false;
-    if (!profileId) {
-      const resolved = await findOrCreateAttendeeProfile({
+    // 2. Record a duplicate-review verdict - Profile creation/linking is
+    // deferred to CRM approval (see the /approve endpoint) for every
+    // registration, regardless of registeredVia or whether the caller
+    // already supplied a profileId. No Profile is created or written here.
+    let duplicateReview;
+    let candidateProfileId = null;
+    let candidateMembershipNumber = null;
+    if (profile.profileId) {
+      // CRM already searched and picked a known profile - trust that
+      // selection outright, no fuzzy scoring needed. Still resolve the real
+      // membershipNumber server-side rather than trusting the frontend.
+      candidateProfileId = profile.profileId;
+      candidateMembershipNumber = await getProfileMembershipNumber({ tenantId, profileId: candidateProfileId });
+      duplicateReview = { status: "CONFIRMED_LINK", matchedProfileId: candidateProfileId };
+    } else {
+      const dupResult = await checkAttendeeDuplicates({
         tenantId,
         email: profile.email,
         firstName: profile.firstName,
         lastName: profile.lastName,
         phone: profile.phone,
-        workLocation: profile.workLocation,
-        grade: profile.grade,
-        nmbiNumber: profile.nmbiNumber,
         addressLine1: profile.addressLine1,
-        addressLine2: profile.addressLine2,
         townCity: profile.townCity,
         countyState: profile.countyState,
         eircode: profile.eircode,
         country: profile.country,
       });
-      profileId = resolved.profileId;
-      membershipNumber = resolved.membershipNumber;
-      profileWasCreated = !!resolved.created;
-    } else {
-      // Existing member/profile supplied by the caller (CRM CreateAttendeeDrawer
-      // or portal self-service) - resolve the real membershipNumber
-      // server-side rather than trusting the frontend to have sent it, so the
-      // resulting payment reliably attaches to that member's own ledger.
-      membershipNumber = await getProfileMembershipNumber({ tenantId, profileId });
-      // Best-effort: fill in NMBI No. on the existing profile only if it's
-      // currently blank there - never overwrites what's already on file.
-      if (profile.nmbiNumber) {
-        await syncAttendeeProfileFields({ tenantId, profileId, nmbiNumber: profile.nmbiNumber });
+      if (dupResult?.resolution === "exact") {
+        candidateProfileId = dupResult.profileId;
+        candidateMembershipNumber = dupResult.membershipNumber || null;
+        duplicateReview = { status: "EXACT_MATCH", matchedProfileId: candidateProfileId };
+      } else if (dupResult?.resolution === "review" && dupResult.candidates?.length) {
+        duplicateReview = {
+          status: "POTENTIAL_MATCH",
+          matchedProfileId: null,
+          matchSummary: dupResult.candidates,
+        };
+      } else {
+        duplicateReview = { status: "NO_MATCH", matchedProfileId: null };
       }
     }
 
     // Everything from here on can still fail (pricing, the Registration
     // write, or taking payment) - if it does, roll back rather than leaving
-    // a half-created Profile/Registration with no successful payment behind.
+    // a half-created Registration with no successful payment behind.
     let registration = null;
     try {
       // 3. Determine real (verified) membership status/category - used for
       // the isMemberAtRegistration/display flag always, and (legacy
       // single-tier path only) to auto-derive which pricing tier applies. A
       // profile with a membershipNumber but a lapsed/cancelled subscription
-      // still counts as a non-member.
+      // still counts as a non-member. Uses the CANDIDATE profile (may be
+      // null for POTENTIAL_MATCH/NO_MATCH) - getActiveMembership already
+      // tolerates a missing profileId, pricing as non-member until approval
+      // resolves the real Profile.
       const { isActiveMember, membershipCategory } = await getActiveMembership({
-        profileId,
+        profileId: candidateProfileId,
         tenantId,
         req,
       });
@@ -297,9 +307,13 @@ async function createRegistration(req, res, next) {
       }
 
       const method = paymentMethod || "stripe";
-      const initialStatus = method === "stripe" ? "pending" : "confirmed";
-      const initialPaymentStatus =
-        method === "stripe" ? "pending" : method === "comp" ? "waived" : "manual";
+      // Every registration starts pending_review now, regardless of payment
+      // method - Profile creation/linking and payment capture/GL-posting
+      // both happen only at CRM approval (see the /approve endpoint), never
+      // here. status/paymentStatus stay "pending" for every method until
+      // then; the Stripe listener flips paymentStatus to "authorized" once
+      // the card is confirmed (still pre-approval - see
+      // payment.status.listener.js).
 
       registration = await Registration.create({
         tenantId,
@@ -310,9 +324,11 @@ async function createRegistration(req, res, next) {
         quantity: seatQuantity,
         priceCategory: seatPriceCategory,
         priceBreakdown,
-        profileId,
-        membershipNumber,
+        profileId: null,
+        membershipNumber: candidateMembershipNumber,
         isMemberAtRegistration: isActiveMember,
+        approvalStatus: "pending_review",
+        duplicateReview,
         attendeeSnapshot: {
           firstName: profile.firstName || null,
           lastName: profile.lastName || null,
@@ -320,6 +336,7 @@ async function createRegistration(req, res, next) {
           phone: profile.phone || null,
           workLocation: profile.workLocation || null,
           grade: profile.grade || null,
+          nmbiNumber: profile.nmbiNumber || null,
           addressLine1: profile.addressLine1 || null,
           addressLine2: profile.addressLine2 || null,
           townCity: profile.townCity || null,
@@ -330,14 +347,14 @@ async function createRegistration(req, res, next) {
         amount,
         currency,
         paymentMethod: method,
-        paymentStatus: initialPaymentStatus,
-        status: initialStatus,
+        paymentStatus: "pending",
+        status: "pending",
         registeredVia,
         registeredByUserId: registeredByUserId || null,
       });
 
-      // 5. Take payment. Only announce the registration once it actually has
-      // a payment attached (intent created, or manual/comp/invoice posted) -
+      // 5. Authorize/record payment - never captured/posted here. Only
+      // announce the registration once it actually has a payment attached -
       // never for one that's about to be rolled back below.
       let paymentPayload = null;
       if (method === "stripe") {
@@ -345,8 +362,8 @@ async function createRegistration(req, res, next) {
           req,
           tenantId,
           registrationId: String(registration._id),
-          profileId,
-          membershipNumber,
+          profileId: candidateProfileId || undefined,
+          membershipNumber: candidateMembershipNumber,
           amount,
           currency,
           productCode,
@@ -354,6 +371,7 @@ async function createRegistration(req, res, next) {
           purpose: registrationType === "course" ? "courseRegistration" : "eventRegistration",
         });
         registration.paymentId = intent?.paymentId || null;
+        registration.stripePaymentIntentId = intent?.paymentIntentId || null;
         await registration.save();
         paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
         await publishRegistrationCreated(registration, tenantId);
@@ -362,8 +380,8 @@ async function createRegistration(req, res, next) {
           req,
           tenantId,
           registrationId: String(registration._id),
-          profileId,
-          membershipNumber,
+          profileId: candidateProfileId || undefined,
+          membershipNumber: candidateMembershipNumber,
           productCode,
           eventCategoryCode,
           amount,
@@ -373,7 +391,9 @@ async function createRegistration(req, res, next) {
         registration.paymentId = manual?.paymentId || null;
         await registration.save();
         await publishRegistrationCreated(registration, tenantId);
-        await publishRegistrationConfirmed(registration, tenantId);
+        // No publishRegistrationConfirmed here anymore - manual/comp/invoice
+        // payments are recorded (not posted) at intake now too; confirmation
+        // waits for CRM approval, same as Stripe.
       }
 
       return res.status(201).json({
@@ -381,13 +401,11 @@ async function createRegistration(req, res, next) {
         data: { registration, payment: paymentPayload },
       });
     } catch (innerError) {
-      // Roll back: don't leave a half-created Registration/Profile behind
-      // just because payment (or pricing) failed after they were created.
+      // Roll back: don't leave a half-created Registration behind just
+      // because payment (or pricing) failed after it was created. No Profile
+      // rollback needed anymore - nothing is created here.
       if (registration) {
         await Registration.deleteOne({ _id: registration._id, tenantId }).catch(() => {});
-      }
-      if (profileWasCreated) {
-        await deleteAttendeeProfile({ tenantId, profileId });
       }
       throw innerError;
     }
@@ -633,58 +651,206 @@ async function cancelRegistration(req, res, next) {
 }
 
 /**
- * Manual payment confirmation only - staff confirms payment was received
- * outside Stripe (or a manual/invoice/comp registration that's stuck
- * pending). The atomic {status:'pending'} guard is the sole idempotency
- * mechanism: postManualRegistrationPayment()'s "manual" branch mints a fresh
- * Payment._id per call (docNo keyed off it), so it is NOT safe to call twice
- * for the same registration - only the caller that wins the atomic
- * transition may proceed to post the GL entry.
+ * CRM approval: resolves/links the attendee's Profile (per the
+ * duplicateReview verdict recorded at intake, or the reviewer's decision for
+ * a POTENTIAL_MATCH), captures the authorized Stripe payment or posts the
+ * recorded manual/comp/invoice payment to the GL, and confirms the
+ * registration - the only point in this whole flow where a Profile gets
+ * created/linked or money actually moves. The atomic
+ * {approvalStatus:'pending_review'} -> 'processing' claim below is what
+ * makes this safe to call concurrently: only the caller that wins the claim
+ * proceeds to capture/post payment, so a Stripe charge or GL entry can never
+ * be posted twice for the same registration.
+ *
+ * Body (only required when duplicateReview.status is POTENTIAL_MATCH):
+ *   { decision: 'LINK'|'CREATE_NEW', candidateProfileId? }
  */
 async function approveRegistration(req, res, next) {
+  const { tenantId } = req.ctx;
+  let claimed = null;
   try {
-    const { tenantId } = req.ctx;
+    const { decision, candidateProfileId } = req.body || {};
+
+    claimed = await Registration.findOneAndUpdate(
+      { _id: req.params.id, tenantId, approvalStatus: "pending_review" },
+      { $set: { approvalStatus: "processing" } },
+      { new: true },
+    );
+    if (!claimed) {
+      return next(
+        AppError.badRequest(
+          "This registration is not awaiting approval (already approved, rejected, or not found).",
+        ),
+      );
+    }
+
+    const review = claimed.duplicateReview || {};
+    let finalProfileId = null;
+
+    if (review.status === "CONFIRMED_LINK" || review.status === "EXACT_MATCH") {
+      finalProfileId = review.matchedProfileId;
+    } else if (review.status === "POTENTIAL_MATCH") {
+      if (decision === "LINK") {
+        if (!candidateProfileId) {
+          throw AppError.badRequest("candidateProfileId is required for a LINK decision");
+        }
+        finalProfileId = candidateProfileId;
+      } else if (decision !== "CREATE_NEW") {
+        throw AppError.badRequest(
+          "decision must be 'LINK' or 'CREATE_NEW' - this registration has a potential duplicate match awaiting review",
+        );
+      }
+    }
+    // NO_MATCH (or anything else) falls through with finalProfileId still
+    // null - create fresh below, no ambiguity to resolve.
+
+    const snap = claimed.attendeeSnapshot || {};
+    let finalMembershipNumber = null;
+    if (finalProfileId) {
+      finalMembershipNumber = await getProfileMembershipNumber({ tenantId, profileId: finalProfileId });
+      if (snap.nmbiNumber) {
+        await syncAttendeeProfileFields({ tenantId, profileId: finalProfileId, nmbiNumber: snap.nmbiNumber });
+      }
+    } else {
+      const resolved = await findOrCreateAttendeeProfile({
+        tenantId,
+        email: snap.email,
+        firstName: snap.firstName,
+        lastName: snap.lastName,
+        phone: snap.phone,
+        workLocation: snap.workLocation,
+        grade: snap.grade,
+        nmbiNumber: snap.nmbiNumber,
+        addressLine1: snap.addressLine1,
+        addressLine2: snap.addressLine2,
+        townCity: snap.townCity,
+        countyState: snap.countyState,
+        eircode: snap.eircode,
+        country: snap.country,
+      });
+      finalProfileId = resolved.profileId;
+      finalMembershipNumber = resolved.membershipNumber;
+    }
+
+    let finalPaymentStatus;
+    if (claimed.paymentMethod === "stripe") {
+      if (!claimed.stripePaymentIntentId) {
+        throw AppError.conflict("This registration has no Stripe PaymentIntent to capture.");
+      }
+      const captureResult = await capturePaymentIntent({
+        req,
+        tenantId,
+        paymentIntentId: claimed.stripePaymentIntentId,
+        profileId: finalProfileId,
+        membershipNumber: finalMembershipNumber,
+      });
+      if (captureResult?.status !== "succeeded") {
+        throw AppError.conflict("Payment capture did not succeed - registration was not approved.");
+      }
+      finalPaymentStatus = "succeeded";
+    } else {
+      if (!claimed.paymentId) {
+        throw AppError.conflict("This registration has no recorded payment to post.");
+      }
+      await postManualRegistrationPaymentToGL({
+        req,
+        tenantId,
+        paymentId: claimed.paymentId,
+        method: claimed.paymentMethod,
+        profileId: finalProfileId,
+        membershipNumber: finalMembershipNumber,
+      });
+      // Matches the pre-approval-gating mapping this service always used:
+      // comp -> waived, manual/invoice -> manual.
+      finalPaymentStatus = claimed.paymentMethod === "comp" ? "waived" : "manual";
+    }
+
+    claimed.profileId = finalProfileId;
+    claimed.membershipNumber = finalMembershipNumber;
+    claimed.paymentStatus = finalPaymentStatus;
+    claimed.status = "confirmed";
+    claimed.approvalStatus = "approved";
+    claimed.duplicateReview = {
+      ...review,
+      status:
+        review.status === "POTENTIAL_MATCH"
+          ? decision === "LINK"
+            ? "CONFIRMED_LINK"
+            : "NO_MATCH"
+          : review.status,
+      matchedProfileId: finalProfileId,
+      reviewedBy: req.ctx?.userId || req.userId || null,
+      reviewedAt: new Date(),
+    };
+    await claimed.save();
+
+    await publishRegistrationConfirmed(claimed, tenantId);
+
+    return res.status(200).json({ success: true, data: claimed });
+  } catch (error) {
+    // Release the claim so a fixable failure (e.g. a transient account-service
+    // error) doesn't leave the registration stuck in "processing" forever.
+    if (claimed) {
+      await Registration.updateOne(
+        { _id: claimed._id, tenantId, approvalStatus: "processing" },
+        { $set: { approvalStatus: "pending_review" } },
+      ).catch(() => {});
+    }
+    if (error instanceof AppError) return next(error);
+    return next(appErrorFromUpstream(error, "Failed to approve registration"));
+  }
+}
+
+/**
+ * CRM rejection of a pending-review registration - releases the Stripe
+ * authorization (cancelPaymentIntent, no refund since nothing was captured)
+ * or voids the recorded-but-unposted manual/comp/invoice payment (nothing
+ * was posted to the GL, so nothing to reverse), then cancels the
+ * registration and frees the seat.
+ */
+async function rejectRegistration(req, res, next) {
+  const { tenantId } = req.ctx;
+  try {
     const registration = await Registration.findOneAndUpdate(
-      { _id: req.params.id, tenantId, status: "pending" },
-      { $set: { status: "confirmed", paymentStatus: "manual", paymentMethod: "manual" } },
+      { _id: req.params.id, tenantId, approvalStatus: "pending_review" },
+      { $set: { approvalStatus: "processing" } },
       { new: true },
     );
     if (!registration) {
       return next(
         AppError.badRequest(
-          "This registration is not awaiting confirmation (already confirmed, cancelled, or not found).",
+          "This registration is not awaiting approval (already approved, rejected, or not found).",
         ),
       );
     }
 
-    const { productCode, eventCategoryCode } = await resolveProductMetadata({
-      tenantId,
-      registrationType: registration.registrationType,
-      eventId: registration.eventId,
-      courseId: registration.courseId,
-    });
+    try {
+      if (registration.paymentMethod === "stripe") {
+        if (registration.stripePaymentIntentId) {
+          await cancelPaymentIntent({ req, tenantId, paymentIntentId: registration.stripePaymentIntentId });
+        }
+      } else if (registration.paymentId) {
+        await voidManualRegistrationPayment({ req, tenantId, paymentId: registration.paymentId });
+      }
+    } catch (paymentError) {
+      await Registration.updateOne(
+        { _id: registration._id, tenantId, approvalStatus: "processing" },
+        { $set: { approvalStatus: "pending_review" } },
+      ).catch(() => {});
+      throw paymentError;
+    }
 
-    const manual = await postManualRegistrationPayment({
-      req,
-      tenantId,
-      registrationId: String(registration._id),
-      profileId: registration.profileId,
-      membershipNumber: registration.membershipNumber,
-      productCode,
-      eventCategoryCode,
-      amount: registration.amount,
-      currency: registration.currency,
-      method: "manual",
-    });
-    registration.paymentId = manual?.paymentId || null;
+    registration.status = "cancelled";
+    registration.approvalStatus = "rejected";
+    registration.isActive = false;
     await registration.save();
 
-    await publishRegistrationConfirmed(registration, tenantId);
+    await publishRegistrationCancelled(registration, tenantId);
 
     return res.status(200).json({ success: true, data: registration });
   } catch (error) {
     if (error instanceof AppError) return next(error);
-    return next(appErrorFromUpstream(error, "Failed to approve registration"));
+    return next(appErrorFromUpstream(error, "Failed to reject registration"));
   }
 }
 
@@ -722,5 +888,6 @@ module.exports = {
   getRegistrationsByProfile,
   cancelRegistration,
   approveRegistration,
+  rejectRegistration,
   checkNewAttendeeDuplicates,
 };

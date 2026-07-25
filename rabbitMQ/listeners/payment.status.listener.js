@@ -24,10 +24,25 @@ async function handlePaymentStatusUpdated(payload) {
   }
 
   if (status === "succeeded") {
+    // Manual-capture registrations (the normal case now - see
+    // registration-flow.md) only reach "succeeded" via approveRegistration's
+    // own capturePaymentIntent call, which updates the Registration directly
+    // rather than waiting on this async event - so this branch only fires
+    // for automatic-capture payments (there are none for events/courses
+    // today, but this is left in place rather than assuming it can't happen).
     registration.paymentStatus = "succeeded";
     registration.status = "confirmed";
     await registration.save();
     await publishRegistrationConfirmed(registration, registration.tenantId);
+  } else if (status === "requires_capture") {
+    // Stripe has authorized (held) the funds - registration stays
+    // pending_review/pending until a CRM user approves; this only updates
+    // the display-facing paymentStatus so "payment authorized, awaiting
+    // review" is visible before approval.
+    if (registration.approvalStatus === "pending_review") {
+      registration.paymentStatus = "authorized";
+      await registration.save();
+    }
   } else if (status === "failed") {
     registration.paymentStatus = "failed";
     await registration.save();

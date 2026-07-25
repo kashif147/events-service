@@ -37,5 +37,10 @@ router.put(
   defaultPolicyMiddleware.requirePermission("events", "write"),
   registrationController.approveRegistration,
 );
+router.put(
+  "/:id/reject",
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  registrationController.rejectRegistration,
+);
 
 module.exports = router;

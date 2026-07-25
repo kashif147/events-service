@@ -57,6 +57,12 @@ async function createRegistrationPaymentIntent({
     {
       tenantId,
       registrationId,
+      // profileId is undefined at intake for a not-yet-resolved attendee
+      // (registrations are approval-gated - see registration-flow.md) -
+      // account-service automatically requests manual capture for
+      // eventRegistration/courseRegistration purposes regardless, and
+      // profileId gets attached later via capturePaymentIntent's linkFields
+      // at approval, right before the charge is actually captured.
       profileId,
       // If the attendee also happens to be a member, tag memberId too so this
       // payment still surfaces in their per-member ledger view (ledgerDomain
@@ -120,7 +126,74 @@ async function postManualRegistrationPayment({
   return response.data?.data;
 }
 
+/**
+ * Captures a previously-authorized (capture_method:"manual") Stripe
+ * PaymentIntent, at CRM approval time - attaches profileId/memberId first
+ * (via account-service's capturePaymentIntent linkFields) so the resulting
+ * GL entry is correctly attributed to the just-resolved attendee Profile.
+ */
+async function capturePaymentIntent({ req, tenantId, paymentIntentId, profileId, membershipNumber }) {
+  const response = await axios.post(
+    `${ACCOUNT_SERVICE_URL}/api/payments/intents/${paymentIntentId}/capture`,
+    {
+      ...(profileId ? { profileId } : {}),
+      ...(membershipNumber ? { memberId: membershipNumber } : {}),
+    },
+    { headers: buildHeaders(req, tenantId), timeout: 15000 },
+  );
+  return response.data?.data;
+}
+
+/**
+ * Cancels (releases the hold on) a previously-authorized Stripe
+ * PaymentIntent, on CRM rejection - no refund, since nothing was captured.
+ */
+async function cancelPaymentIntent({ req, tenantId, paymentIntentId }) {
+  const response = await axios.post(
+    `${ACCOUNT_SERVICE_URL}/api/payments/intents/${paymentIntentId}/cancel`,
+    {},
+    { headers: buildHeaders(req, tenantId), timeout: 15000 },
+  );
+  return response.data?.data;
+}
+
+/**
+ * Posts a previously-recorded (deferPosting) manual/comp/invoice event
+ * payment to the GL, at CRM approval time, once profileId is resolved.
+ */
+async function postManualRegistrationPaymentToGL({ req, tenantId, paymentId, method, profileId, membershipNumber }) {
+  const response = await axios.post(
+    `${ACCOUNT_SERVICE_URL}/api/journal/events/manual-payment/post`,
+    {
+      tenantId,
+      paymentId,
+      method,
+      profileId,
+      ...(membershipNumber ? { memberId: membershipNumber } : {}),
+    },
+    { headers: buildHeaders(req, tenantId), timeout: 15000 },
+  );
+  return response.data?.data;
+}
+
+/**
+ * Voids a recorded-but-unposted manual/comp/invoice event payment, on CRM
+ * rejection - nothing was posted to the GL, so this is a plain status flip.
+ */
+async function voidManualRegistrationPayment({ req, tenantId, paymentId }) {
+  const response = await axios.post(
+    `${ACCOUNT_SERVICE_URL}/api/journal/events/manual-payment/void`,
+    { tenantId, paymentId },
+    { headers: buildHeaders(req, tenantId), timeout: 15000 },
+  );
+  return response.data?.data;
+}
+
 module.exports = {
   createRegistrationPaymentIntent,
   postManualRegistrationPayment,
+  capturePaymentIntent,
+  cancelPaymentIntent,
+  postManualRegistrationPaymentToGL,
+  voidManualRegistrationPayment,
 };
