@@ -4,6 +4,7 @@ const {
   findOrCreateAttendeeProfile,
   getProfileMembershipNumber,
   syncAttendeeProfileFields,
+  deleteAttendeeProfile,
 } = require("./profileLookup.client.js");
 const {
   capturePaymentIntent,
@@ -75,6 +76,11 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
 
   const snap = claimed.attendeeSnapshot || {};
   let finalMembershipNumber = null;
+  // Tracks whether THIS call created a brand-new Profile (as opposed to
+  // linking an existing one) - only that case needs a compensating rollback
+  // below if payment capture/posting then fails, since an existing profile
+  // was never ours to delete.
+  let createdFreshProfile = false;
   if (finalProfileId) {
     finalMembershipNumber = await getProfileMembershipNumber({ tenantId, profileId: finalProfileId });
     if (snap.nmbiNumber) {
@@ -99,39 +105,53 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
     });
     finalProfileId = resolved.profileId;
     finalMembershipNumber = resolved.membershipNumber;
+    createdFreshProfile = !!resolved.created;
   }
 
   let finalPaymentStatus;
-  if (claimed.paymentMethod === "stripe") {
-    if (!claimed.stripePaymentIntentId) {
-      throw AppError.conflict("This registration has no Stripe PaymentIntent to capture.");
+  try {
+    if (claimed.paymentMethod === "stripe") {
+      if (!claimed.stripePaymentIntentId) {
+        throw AppError.conflict("This registration has no Stripe PaymentIntent to capture.");
+      }
+      const captureResult = await capturePaymentIntent({
+        req,
+        tenantId,
+        paymentIntentId: claimed.stripePaymentIntentId,
+        profileId: finalProfileId,
+        membershipNumber: finalMembershipNumber,
+      });
+      if (captureResult?.status !== "succeeded") {
+        throw AppError.conflict("Payment capture did not succeed - registration was not approved.");
+      }
+      finalPaymentStatus = "succeeded";
+    } else {
+      if (!claimed.paymentId) {
+        throw AppError.conflict("This registration has no recorded payment to post.");
+      }
+      await postManualRegistrationPaymentToGL({
+        req,
+        tenantId,
+        paymentId: claimed.paymentId,
+        method: claimed.paymentMethod,
+        profileId: finalProfileId,
+        membershipNumber: finalMembershipNumber,
+      });
+      // Matches the mapping this service always used: comp -> waived,
+      // manual/invoice -> manual.
+      finalPaymentStatus = claimed.paymentMethod === "comp" ? "waived" : "manual";
     }
-    const captureResult = await capturePaymentIntent({
-      req,
-      tenantId,
-      paymentIntentId: claimed.stripePaymentIntentId,
-      profileId: finalProfileId,
-      membershipNumber: finalMembershipNumber,
-    });
-    if (captureResult?.status !== "succeeded") {
-      throw AppError.conflict("Payment capture did not succeed - registration was not approved.");
+  } catch (paymentError) {
+    // A brand-new attendee Profile was just created above, but payment
+    // capture/posting then failed (e.g. the Stripe PaymentIntent never
+    // actually got authorized) - don't leave an orphan Profile with no
+    // confirmed registration behind. Best-effort: a rollback failure must
+    // never mask the original payment error, and deleteAttendeeProfile
+    // itself already refuses to touch anything with a membershipNumber.
+    if (createdFreshProfile && finalProfileId) {
+      await deleteAttendeeProfile({ tenantId, profileId: finalProfileId }).catch(() => {});
     }
-    finalPaymentStatus = "succeeded";
-  } else {
-    if (!claimed.paymentId) {
-      throw AppError.conflict("This registration has no recorded payment to post.");
-    }
-    await postManualRegistrationPaymentToGL({
-      req,
-      tenantId,
-      paymentId: claimed.paymentId,
-      method: claimed.paymentMethod,
-      profileId: finalProfileId,
-      membershipNumber: finalMembershipNumber,
-    });
-    // Matches the mapping this service always used: comp -> waived,
-    // manual/invoice -> manual.
-    finalPaymentStatus = claimed.paymentMethod === "comp" ? "waived" : "manual";
+    throw paymentError;
   }
 
   claimed.profileId = finalProfileId;
