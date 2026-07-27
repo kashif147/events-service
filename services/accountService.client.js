@@ -158,6 +158,50 @@ async function cancelPaymentIntent({ req, tenantId, paymentIntentId }) {
 }
 
 /**
+ * Looks up an existing Payment by Stripe PaymentIntent id - used to verify a
+ * portal/mobile-supplied stripePaymentIntentId (see createRegistration)
+ * actually exists, belongs to this tenant, and to check its live amount/
+ * status before trusting it, rather than blindly linking an arbitrary
+ * caller-supplied id.
+ */
+async function getPaymentByPaymentIntentId({ req, tenantId, paymentIntentId }) {
+  const response = await axios.get(
+    `${ACCOUNT_SERVICE_URL}/api/payments/by-stripe/${paymentIntentId}`,
+    { headers: buildHeaders(req, tenantId), timeout: 15000 },
+  );
+  return response.data?.data;
+}
+
+/**
+ * Attaches registrationId/productCode/eventCategoryCode to a Payment whose
+ * PaymentIntent portal/mobile already created (and the payer already
+ * confirmed/authorized) directly against account-service, BEFORE this
+ * Registration existed - so those fields couldn't be included at PaymentIntent
+ * creation time. Used instead of createRegistrationPaymentIntent for
+ * registeredVia portal/mobile - never create a second PaymentIntent for a
+ * payment the payer already authorized.
+ */
+async function attachRegistrationToPaymentIntent({
+  req,
+  tenantId,
+  paymentIntentId,
+  registrationId,
+  productCode,
+  eventCategoryCode,
+}) {
+  const response = await axios.post(
+    `${ACCOUNT_SERVICE_URL}/api/payments/intents/${paymentIntentId}/attach-registration`,
+    {
+      registrationId,
+      ...(productCode ? { productCode } : {}),
+      ...(eventCategoryCode ? { eventCategoryCode } : {}),
+    },
+    { headers: buildHeaders(req, tenantId), timeout: 15000 },
+  );
+  return response.data?.data;
+}
+
+/**
  * Posts a previously-recorded (deferPosting) manual/comp/invoice event
  * payment to the GL, at CRM approval time, once profileId is resolved.
  */
@@ -194,6 +238,8 @@ module.exports = {
   postManualRegistrationPayment,
   capturePaymentIntent,
   cancelPaymentIntent,
+  getPaymentByPaymentIntentId,
+  attachRegistrationToPaymentIntent,
   postManualRegistrationPaymentToGL,
   voidManualRegistrationPayment,
 };

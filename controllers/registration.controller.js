@@ -77,6 +77,8 @@ const {
   postManualRegistrationPayment,
   cancelPaymentIntent,
   voidManualRegistrationPayment,
+  getPaymentByPaymentIntentId,
+  attachRegistrationToPaymentIntent,
 } = require("../services/accountService.client.js");
 const {
   publishRegistrationCreated,
@@ -132,6 +134,13 @@ async function createRegistration(req, res, next) {
       registeredByUserId,
       quantity,
       lineItems,
+      // Portal/mobile authorize payment directly against account-service
+      // BEFORE this Registration exists (so registrationId can't be included
+      // at PaymentIntent-creation time), then pass the already-authorized
+      // intent id here. When present, createRegistration must link/attach it
+      // rather than create a second, separate PaymentIntent for a payment
+      // the payer already confirmed - see the stripe branch below.
+      stripePaymentIntentId,
     } = req.body || {};
 
     if (!registrationType || !["event", "course"].includes(registrationType)) {
@@ -368,7 +377,57 @@ async function createRegistration(req, res, next) {
       // announce the registration once it actually has a payment attached -
       // never for one that's about to be rolled back below.
       let paymentPayload = null;
-      if (method === "stripe") {
+      if (method === "stripe" && stripePaymentIntentId) {
+        // Portal/mobile already created AND confirmed this PaymentIntent
+        // directly against account-service before this Registration existed
+        // (registrationId couldn't be included at PaymentIntent-creation
+        // time) - verify it, link it, and backfill registrationId onto it.
+        // Never create a second, separate PaymentIntent for a payment the
+        // payer already authorized.
+        const purpose = registrationType === "course" ? "courseRegistration" : "eventRegistration";
+        const existingPayment = await getPaymentByPaymentIntentId({
+          req,
+          tenantId,
+          paymentIntentId: stripePaymentIntentId,
+        });
+        if (!existingPayment) {
+          throw AppError.badRequest(
+            "stripePaymentIntentId does not correspond to a known payment for this tenant.",
+          );
+        }
+        if (existingPayment.registrationId) {
+          throw AppError.badRequest(
+            "This PaymentIntent has already been used for another registration.",
+          );
+        }
+        if (
+          existingPayment.purpose !== purpose ||
+          existingPayment.amount !== amount ||
+          String(existingPayment.currency).toLowerCase() !== String(currency).toLowerCase()
+        ) {
+          throw AppError.badRequest(
+            "stripePaymentIntentId does not match this registration's purpose/amount/currency.",
+          );
+        }
+        const attached = await attachRegistrationToPaymentIntent({
+          req,
+          tenantId,
+          paymentIntentId: stripePaymentIntentId,
+          registrationId: String(registration._id),
+          productCode,
+          eventCategoryCode,
+        });
+        registration.paymentId = existingPayment._id || null;
+        registration.stripePaymentIntentId = stripePaymentIntentId;
+        // requires_capture (authorized) is the expected live state here,
+        // mirroring what the requires_capture webhook branch already sets
+        // for the legacy (events-service-created-intent) flow.
+        if (attached?.status === "requires_capture") {
+          registration.paymentStatus = "authorized";
+        }
+        await registration.save();
+        await publishRegistrationCreated(registration, tenantId);
+      } else if (method === "stripe") {
         const intent = await createRegistrationPaymentIntent({
           req,
           tenantId,

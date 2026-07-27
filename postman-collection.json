@@ -365,7 +365,28 @@
               "host": ["{{baseUrl}}"],
               "path": ["api", "registrations"]
             },
-            "description": "profile.profileId is optional - leave blank for a brand-new/not-yet-linked attendee (a server-side duplicate check runs against email/mobile/NMBI (exact) and name/DOB/eircode/address (fuzzy), recorded as duplicateReview on the response) or supply it when the CRM/portal already resolved which existing Profile this is (trusted as CONFIRMED_LINK, no re-scoring). paymentMethod: stripe | invoice | comp | manual. registeredVia: crm | portal | mobile. No Profile is created and no payment is captured/posted by this call - the registration is created at approvalStatus 'pending_review'; see Approve Registration below. For paymentMethod=stripe, the response's payment.clientSecret is confirmed client-side (stripe.confirmCardPayment) before approval - the intent uses manual capture."
+            "description": "profile.profileId is optional - leave blank for a brand-new/not-yet-linked attendee (a server-side duplicate check runs against email/mobile/NMBI (exact) and name/DOB/eircode/address (fuzzy), recorded as duplicateReview on the response) or supply it when the CRM/portal already resolved which existing Profile this is (trusted as CONFIRMED_LINK, no re-scoring). paymentMethod: stripe | invoice | comp | manual. registeredVia: crm | portal | mobile. No Profile is created and no payment is captured/posted by this call - the registration is created at approvalStatus 'pending_review'; see Approve Registration below. This CRM-style request (no stripePaymentIntentId) makes events-service create a fresh manual-capture PaymentIntent itself and return its clientSecret - confirm client-side (stripe.confirmCardPayment) right after. For portal/mobile, which authorize payment directly against account-service BEFORE calling this endpoint, see 'Create Registration (portal/mobile, pre-authorized PaymentIntent)' below instead - never call this shape with an already-authorized intent, it will create a second, unrelated one."
+          }
+        },
+        {
+          "name": "Create Registration (portal/mobile, pre-authorized PaymentIntent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"registrationType\": \"event\",\n  \"eventId\": \"{{eventId}}\",\n  \"sessionIds\": [],\n  \"quantity\": 1,\n  \"profile\": {\n    \"email\": \"attendee@example.com\",\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\"\n  },\n  \"paymentMethod\": \"stripe\",\n  \"registeredVia\": \"portal\",\n  \"stripePaymentIntentId\": \"pi_xxx\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations"]
+            },
+            "description": "Portal/mobile authorize payment directly against account-service (POST /account-service/api/payments/intents with purpose=eventRegistration/courseRegistration, then confirm the card) BEFORE this Registration exists - registrationId can't be included at that point. Pass the already-authorized PaymentIntent's id as stripePaymentIntentId here. createRegistration will NOT create a second PaymentIntent in this case - it verifies the existing payment (tenant/purpose/amount/currency match, and that it isn't already attached to a different registration) via account-service's GET /payments/by-stripe/:paymentIntentId, then backfills registrationId/productCode/eventCategoryCode onto it via POST /payments/intents/:id/attach-registration. The response's payment will be null (no new clientSecret - the caller already has one). Sending stripePaymentIntentId for an intent that doesn't match this registration's amount/currency, or that's already linked to another registration, returns a 400."
           }
         },
         {
