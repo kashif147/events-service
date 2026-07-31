@@ -194,7 +194,7 @@ async function createRegistration(req, res, next) {
       event = await Event.findOne({ _id: eventId, tenantId }).lean();
       if (!event) return next(AppError.notFound("Event not found"));
 
-      if (event.capacity != null) {
+      if (event.capacity != null && event.capacity !== 0) {
         const booked = await getBookedSeats({ tenantId, eventId });
         const remaining = event.capacity - booked;
         if (seatQuantity > remaining) {
@@ -205,7 +205,7 @@ async function createRegistration(req, res, next) {
       if (Array.isArray(sessionIds) && sessionIds.length > 0) {
         const sessions = await EventSession.find({ _id: { $in: sessionIds }, tenantId, eventId }).lean();
         for (const session of sessions) {
-          if (session.capacity == null) continue;
+          if (session.capacity == null || session.capacity === 0) continue;
           const bookedForSession = await getBookedSeats({ tenantId, eventId, sessionId: session._id });
           const remaining = session.capacity - bookedForSession;
           if (seatQuantity > remaining) {
