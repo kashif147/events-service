@@ -514,7 +514,7 @@ async function getEventsMapForRegistrations({ tenantId, registrations }) {
 
   const events = await Event.find({ _id: { $in: eventIds }, tenantId })
     .select(
-      "title eventTypeId eventCategoryLookupId eventCategoryLookupCode eventCategoryCode startDate endDate venue isVirtual imageUrl status cpdCredits accreditationBody certificationType",
+      "title eventTypeId eventCategoryLookupId eventCategoryLookupCode startDate endDate venue isVirtual imageUrl status cpdCredits accreditationBody certificationType",
     )
     .lean();
   return new Map(events.map((ev) => [String(ev._id), ev]));
@@ -628,7 +628,6 @@ function enrichRegistrationsWithEvent(registrations, eventsById) {
       eventTypeId: event?.eventTypeId || null,
       eventCategoryLookupId: event?.eventCategoryLookupId || null,
       eventCategoryLookupCode: event?.eventCategoryLookupCode || null,
-      eventCategoryCode: event?.eventCategoryCode || null,
       eventStartDate: event?.startDate || null,
       eventEndDate: event?.endDate || null,
     };

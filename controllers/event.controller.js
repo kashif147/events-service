@@ -26,7 +26,7 @@ function omitProductFields(doc) {
 
 // Never trust a client-supplied eventCategoryLookupCode - always re-resolve it
 // server-side from eventCategoryLookupId against user-service's live Lookup
-// data, mirroring how eventCategoryProductTypeId's code is derived elsewhere.
+// data.
 async function resolveEventCategoryLookupCode(eventCategoryLookupId, req, tenantId) {
   if (!eventCategoryLookupId) return null;
   const resolved = await resolveEventCategoryLookup(eventCategoryLookupId, req, tenantId);
@@ -74,7 +74,9 @@ async function listEvents(req, res, next) {
     // status omitted -> all events; status=Published -> published only
     // (same param also covers Draft/Cancelled/Completed).
     if (status) filter.status = status;
-    if (eventCategoryCode) filter.eventCategoryCode = eventCategoryCode;
+    // Query param is named eventCategoryCode for the portal's existing API
+    // contract; it maps directly onto the one stored category field.
+    if (eventCategoryCode) filter.eventCategoryLookupCode = eventCategoryCode;
     if (from || to) {
       filter.startDate = {};
       if (from) filter.startDate.$gte = new Date(from);
@@ -219,8 +221,6 @@ async function createEvent(req, res, next) {
       description,
       productId,
       productCode,
-      eventCategoryCode,
-      eventCategoryProductTypeId,
       eventCategoryLookupId,
       eventTypeId,
       memberPrice,
@@ -287,8 +287,6 @@ async function createEvent(req, res, next) {
       description,
       productId,
       productCode,
-      eventCategoryCode,
-      eventCategoryProductTypeId,
       eventCategoryLookupId: eventCategoryLookupId || null,
       eventCategoryLookupCode,
       eventTypeId,

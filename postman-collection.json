@@ -5,14 +5,46 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl", "value": "http://localhost:4011", "type": "string" },
-    { "key": "authToken", "value": "", "type": "string" },
-    { "key": "eventId", "value": "", "type": "string" },
-    { "key": "sessionId", "value": "", "type": "string" },
-    { "key": "courseId", "value": "", "type": "string" },
-    { "key": "registrationId", "value": "", "type": "string" },
-    { "key": "profileId", "value": "", "type": "string" },
-    { "key": "templateId", "value": "", "type": "string" }
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4011",
+      "type": "string"
+    },
+    {
+      "key": "authToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "eventId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "sessionId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "courseId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "registrationId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "profileId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "templateId",
+      "value": "",
+      "type": "string"
+    }
   ],
   "item": [
     {
@@ -25,8 +57,12 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/health",
-              "host": ["{{baseUrl}}"],
-              "path": ["health"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
             },
             "description": "No auth required. Returns { status: \"UP\" }."
           }
@@ -38,8 +74,12 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/api",
-              "host": ["{{baseUrl}}"],
-              "path": ["api"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api"
+              ]
             },
             "description": "No auth required. Returns a short service/endpoint summary."
           }
@@ -53,30 +93,71 @@
           "name": "List Events",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/events?status=Published&from=2026-01-01&to=2026-12-31&q=conference&eventCategoryCode=CPD",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "events"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events"
+              ],
               "query": [
-                { "key": "status", "value": "Published", "description": "Draft | Published | Cancelled | Completed" },
-                { "key": "from", "value": "2026-01-01", "description": "startDate >= from" },
-                { "key": "to", "value": "2026-12-31", "description": "startDate <= to" },
-                { "key": "q", "value": "conference", "description": "case-insensitive title search" },
-                { "key": "eventCategoryCode", "value": "CPD" }
+                {
+                  "key": "status",
+                  "value": "Published",
+                  "description": "Draft | Published | Cancelled | Completed"
+                },
+                {
+                  "key": "from",
+                  "value": "2026-01-01",
+                  "description": "startDate >= from"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-12-31",
+                  "description": "startDate <= to"
+                },
+                {
+                  "key": "q",
+                  "value": "conference",
+                  "description": "case-insensitive title search"
+                },
+                {
+                  "key": "eventCategoryCode",
+                  "value": "CPD"
+                }
               ]
-            }
+            },
+            "description": "eventCategoryCode query param matches against the event's category (\"CPD\" or \"EVENT\") - safe to rely on, this is the one canonical category field on Event (eventCategoryLookupId/eventCategoryLookupCode internally)."
           }
         },
         {
           "name": "Get Event by ID",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/events/{{eventId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "events", "{{eventId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}"
+              ]
             }
           }
         },
@@ -84,14 +165,33 @@
           "name": "Get Event Price Quote",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/events/{{eventId}}/price-quote?profileId={{profileId}}&quantity=1",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "events", "{{eventId}}", "price-quote"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}",
+                "price-quote"
+              ],
               "query": [
-                { "key": "profileId", "value": "{{profileId}}", "description": "optional - omit to quote as a non-member" },
-                { "key": "quantity", "value": "1" }
+                {
+                  "key": "profileId",
+                  "value": "{{profileId}}",
+                  "description": "optional - omit to quote as a non-member"
+                },
+                {
+                  "key": "quantity",
+                  "value": "1"
+                }
               ]
             }
           }
@@ -101,18 +201,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"title\": \"Annual Nursing Conference\",\n  \"description\": \"<p>Full-day CPD conference.</p>\",\n  \"eventCategoryLookupId\": \"\",\n  \"eventCategoryProductTypeId\": \"\",\n  \"eventTypeId\": \"\",\n  \"venueId\": \"\",\n  \"venue\": \"Croke Park Conference Centre\",\n  \"isVirtual\": false,\n  \"imageUrl\": \"\",\n  \"startDate\": \"2026-09-15T09:00:00.000Z\",\n  \"endDate\": \"2026-09-15T17:00:00.000Z\",\n  \"capacity\": 200,\n  \"status\": \"Draft\",\n  \"isActive\": true,\n  \"memberPrice\": 50,\n  \"nonMemberPrice\": 90,\n  \"pricingTiers\": [\n    {\n      \"tierType\": \"EARLY_BIRD_MEMBER\",\n      \"price\": 35,\n      \"cutoffDate\": \"2026-08-01T00:00:00.000Z\",\n      \"isActive\": true\n    }\n  ],\n  \"cpdCredits\": 6,\n  \"accreditationBody\": \"\",\n  \"certificationType\": \"attendance\",\n  \"autoIssueOnFinish\": false,\n  \"costs\": [],\n  \"refundPolicyDays\": 7,\n  \"allowPartialAttendance\": false,\n  \"perDayPricing\": false\n}",
-              "options": { "raw": { "language": "json" } }
+              "raw": "{\n  \"title\": \"Annual Nursing Conference\",\n  \"description\": \"<p>Full-day CPD conference.</p>\",\n  \"eventCategoryLookupId\": \"\",\n  \"eventTypeId\": \"\",\n  \"venueId\": \"\",\n  \"venue\": \"Croke Park Conference Centre\",\n  \"isVirtual\": false,\n  \"imageUrl\": \"\",\n  \"startDate\": \"2026-09-15T09:00:00.000Z\",\n  \"endDate\": \"2026-09-15T17:00:00.000Z\",\n  \"capacity\": 200,\n  \"status\": \"Draft\",\n  \"isActive\": true,\n  \"memberPrice\": 50,\n  \"nonMemberPrice\": 90,\n  \"pricingTiers\": [\n    {\n      \"tierType\": \"EARLY_BIRD_MEMBER\",\n      \"price\": 35,\n      \"cutoffDate\": \"2026-08-01T00:00:00.000Z\",\n      \"isActive\": true\n    }\n  ],\n  \"cpdCredits\": 6,\n  \"accreditationBody\": \"\",\n  \"certificationType\": \"attendance\",\n  \"autoIssueOnFinish\": false,\n  \"costs\": [],\n  \"refundPolicyDays\": 7,\n  \"allowPartialAttendance\": false,\n  \"perDayPricing\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/events",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "events"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events"
+              ]
             }
           }
         },
@@ -121,18 +236,34 @@
           "request": {
             "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"title\": \"Annual Nursing Conference (Updated)\",\n  \"capacity\": 250\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/events/{{eventId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "events", "{{eventId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}"
+              ]
             }
           }
         },
@@ -140,11 +271,22 @@
           "name": "Delete Event (soft delete, Draft only)",
           "request": {
             "method": "DELETE",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/events/{{eventId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "events", "{{eventId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}"
+              ]
             }
           }
         },
@@ -152,17 +294,33 @@
           "name": "Upload Event Image",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "body": {
               "mode": "formdata",
               "formdata": [
-                { "key": "image", "type": "file", "src": [] }
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": []
+                }
               ]
             },
             "url": {
               "raw": "{{baseUrl}}/api/events/{{eventId}}/image",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "events", "{{eventId}}", "image"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}",
+                "image"
+              ],
               "description": "Use \"draft\" in place of {{eventId}} when uploading before the event is first saved."
             }
           }
@@ -172,18 +330,35 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"label\": \"Day 1\",\n  \"date\": \"2026-09-15\",\n  \"startTime\": \"09:00\",\n  \"endTime\": \"17:00\",\n  \"isVirtual\": false,\n  \"capacity\": 100,\n  \"memberPrice\": 30,\n  \"nonMemberPrice\": 50,\n  \"pricingTiers\": []\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/events/{{eventId}}/sessions",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "events", "{{eventId}}", "sessions"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}",
+                "sessions"
+              ]
             }
           }
         },
@@ -192,18 +367,36 @@
           "request": {
             "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"label\": \"Day 1 (Updated)\",\n  \"capacity\": 120\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/events/{{eventId}}/sessions/{{sessionId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "events", "{{eventId}}", "sessions", "{{sessionId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}",
+                "sessions",
+                "{{sessionId}}"
+              ]
             }
           }
         },
@@ -211,11 +404,24 @@
           "name": "Delete Session",
           "request": {
             "method": "DELETE",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/events/{{eventId}}/sessions/{{sessionId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "events", "{{eventId}}", "sessions", "{{sessionId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}",
+                "sessions",
+                "{{sessionId}}"
+              ]
             }
           }
         }
@@ -228,16 +434,38 @@
           "name": "List Courses",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/courses?status=Published&from=2026-01-01&to=2026-12-31&q=first%20aid",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "courses"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "courses"
+              ],
               "query": [
-                { "key": "status", "value": "Published" },
-                { "key": "from", "value": "2026-01-01" },
-                { "key": "to", "value": "2026-12-31" },
-                { "key": "q", "value": "first aid" }
+                {
+                  "key": "status",
+                  "value": "Published"
+                },
+                {
+                  "key": "from",
+                  "value": "2026-01-01"
+                },
+                {
+                  "key": "to",
+                  "value": "2026-12-31"
+                },
+                {
+                  "key": "q",
+                  "value": "first aid"
+                }
               ]
             }
           }
@@ -246,11 +474,22 @@
           "name": "Get Course by ID",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/courses/{{courseId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "courses", "{{courseId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "courses",
+                "{{courseId}}"
+              ]
             }
           }
         },
@@ -259,18 +498,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"title\": \"Manual Handling Refresher\",\n  \"description\": \"Online self-paced course\",\n  \"deliveryMode\": \"online\",\n  \"startDate\": \"2026-10-01T00:00:00.000Z\",\n  \"endDate\": \"2026-10-31T00:00:00.000Z\",\n  \"capacity\": 500,\n  \"status\": \"Draft\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/courses",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "courses"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "courses"
+              ]
             }
           }
         },
@@ -279,18 +533,34 @@
           "request": {
             "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"capacity\": 600,\n  \"status\": \"Published\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/courses/{{courseId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "courses", "{{courseId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "courses",
+                "{{courseId}}"
+              ]
             }
           }
         },
@@ -298,15 +568,27 @@
           "name": "Delete Course (soft delete)",
           "request": {
             "method": "DELETE",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/courses/{{courseId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "courses", "{{courseId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "courses",
+                "{{courseId}}"
+              ]
             }
           }
         }
-      ]
+      ],
+      "description": "The Course model/endpoints exist and work, but nothing in the CRM creates Course documents - there is no \"Create Course\" UI. What the business calls a \"course\" (e.g. CPD training) is actually an Event with eventCategoryLookupCode=\"CPD\" - see the Events folder and the eventCategoryCode filter on List Events. Do not build portal course registration against this folder; use POST /registrations with registrationType=\"event\" and the CPD event's eventId instead."
     },
     {
       "name": "Registrations",
@@ -315,17 +597,46 @@
           "name": "List Registrations",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/registrations?eventId={{eventId}}&status=confirmed&q=smith",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "registrations"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations"
+              ],
               "query": [
-                { "key": "eventId", "value": "{{eventId}}" },
-                { "key": "courseId", "value": "", "disabled": true },
-                { "key": "profileId", "value": "", "disabled": true },
-                { "key": "status", "value": "confirmed", "description": "pending | confirmed | cancelled | attended | no-show" },
-                { "key": "q", "value": "smith", "description": "matches attendee first/last name or email" }
+                {
+                  "key": "eventId",
+                  "value": "{{eventId}}"
+                },
+                {
+                  "key": "courseId",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "profileId",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "confirmed",
+                  "description": "pending | confirmed | cancelled | attended | no-show"
+                },
+                {
+                  "key": "q",
+                  "value": "smith",
+                  "description": "matches attendee first/last name or email"
+                }
               ]
             },
             "description": "Backs the CRM Attendees grid. Each row also carries approvalStatus (pending_review | processing | approved | rejected) and duplicateReview (status/matchedProfileId/matchSummary) - filter/sort client-side, there's no server-side limit."
@@ -335,13 +646,30 @@
           "name": "Get Registrations by Profile (My Events)",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/registrations/profile/{{profileId}}?timing=upcoming",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "registrations", "profile", "{{profileId}}"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations",
+                "profile",
+                "{{profileId}}"
+              ],
               "query": [
-                { "key": "timing", "value": "upcoming", "description": "optional: past | current | upcoming - omit to get all", "disabled": true }
+                {
+                  "key": "timing",
+                  "value": "upcoming",
+                  "description": "optional: past | current | upcoming - omit to get all",
+                  "disabled": true
+                }
               ]
             },
             "description": "Every registration (event or course) for this profile, enriched with: title, startDate, endDate, venue, format (Virtual/In-Person/Hybrid), eventTypeId + eventTypeName (resolved via user-service Lookup), eventCategoryLookupCode, cpdCredits, accreditationBody, certificationType, imageUrl, deliveryMode (courses), parentStatus (the Event/Course's own status), and registered sessions. Each row also gets a computed `timing` field (past/current/upcoming) so the portal can show tabs/sections without extra date math; pass ?timing= to filter server-side instead."
@@ -352,18 +680,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"registrationType\": \"event\",\n  \"eventId\": \"{{eventId}}\",\n  \"sessionIds\": [],\n  \"quantity\": 1,\n  \"profile\": {\n    \"profileId\": \"\",\n    \"email\": \"attendee@example.com\",\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\",\n    \"phone\": \"\",\n    \"workLocation\": \"\",\n    \"grade\": \"\",\n    \"nmbiNumber\": \"\",\n    \"addressLine1\": \"\",\n    \"addressLine2\": \"\",\n    \"townCity\": \"\",\n    \"countyState\": \"\",\n    \"eircode\": \"\",\n    \"country\": \"Ireland\"\n  },\n  \"paymentMethod\": \"stripe\",\n  \"registeredVia\": \"crm\",\n  \"registeredByUserId\": \"\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/registrations",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "registrations"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations"
+              ]
             },
             "description": "profile.profileId is optional - leave blank for a brand-new/not-yet-linked attendee (a server-side duplicate check runs against email/mobile/NMBI (exact) and name/DOB/eircode/address (fuzzy), recorded as duplicateReview on the response) or supply it when the CRM/portal already resolved which existing Profile this is (trusted as CONFIRMED_LINK, no re-scoring). paymentMethod: stripe | invoice | comp | manual. registeredVia: crm | portal | mobile. No Profile is created and no payment is captured/posted by this call - the registration is created at approvalStatus 'pending_review'; see Approve Registration below. This CRM-style request (no stripePaymentIntentId) makes events-service create a fresh manual-capture PaymentIntent itself and return its clientSecret - confirm client-side (stripe.confirmCardPayment) right after. For portal/mobile, which authorize payment directly against account-service BEFORE calling this endpoint, see 'Create Registration (portal/mobile, pre-authorized PaymentIntent)' below instead - never call this shape with an already-authorized intent, it will create a second, unrelated one."
           }
@@ -373,20 +716,35 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"registrationType\": \"event\",\n  \"eventId\": \"{{eventId}}\",\n  \"sessionIds\": [],\n  \"quantity\": 1,\n  \"profile\": {\n    \"email\": \"attendee@example.com\",\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\"\n  },\n  \"paymentMethod\": \"stripe\",\n  \"registeredVia\": \"portal\",\n  \"stripePaymentIntentId\": \"pi_xxx\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/registrations",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "registrations"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations"
+              ]
             },
-            "description": "Portal/mobile authorize payment directly against account-service (POST /account-service/api/payments/intents with purpose=eventRegistration/courseRegistration, then confirm the card) BEFORE this Registration exists - registrationId can't be included at that point. Pass the already-authorized PaymentIntent's id as stripePaymentIntentId here. createRegistration will NOT create a second PaymentIntent in this case - it verifies the existing payment (tenant/purpose/amount/currency match, and that it isn't already attached to a different registration) via account-service's GET /payments/by-stripe/:paymentIntentId, then backfills registrationId/productCode/eventCategoryCode onto it via POST /payments/intents/:id/attach-registration. The response's payment will be null (no new clientSecret - the caller already has one). Sending stripePaymentIntentId for an intent that doesn't match this registration's amount/currency, or that's already linked to another registration, returns a 400."
+            "description": "Portal/mobile authorize payment directly against account-service (POST /account-service/api/payments/intents with purpose=eventRegistration/courseRegistration, then confirm the card) BEFORE this Registration exists - registrationId can't be included at that point. Pass the already-authorized PaymentIntent's id as stripePaymentIntentId here. createRegistration will NOT create a second PaymentIntent in this case - it verifies the existing payment (tenant/purpose/amount/currency match, and that it isn't already attached to a different registration) via account-service's GET /payments/by-stripe/:paymentIntentId, then backfills registrationId/productCode/eventCategoryCode onto it via POST /payments/intents/:id/attach-registration. The response's payment will be null (no new clientSecret - the caller already has one). Sending stripePaymentIntentId for an intent that doesn't match this registration's amount/currency, or that's already linked to another registration, returns a 400.\n\n IMPORTANT for CPD/course registrations: send registrationType=\"event\" with the CPD event's eventId - there is no separate course registrationType/courseId path in practice (see the Courses folder note). Do not send lineItems from portal/mobile - it bypasses membership/early-bird pricing and is CRM-only; use quantity instead so the amount matches what GET /events/:id/price-quote showed. The amount sent to POST /account-service/api/payments/intents must be integer cents, not euros."
           }
         },
         {
@@ -394,18 +752,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"registrationType\": \"event\",\n  \"eventId\": \"{{eventId}}\",\n  \"sessionIds\": [],\n  \"lineItems\": [\n    { \"tierKey\": \"MEMBER\", \"quantity\": 2 },\n    { \"tierKey\": \"STUDENT\", \"quantity\": 1 }\n  ],\n  \"profile\": {\n    \"email\": \"attendee@example.com\",\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\",\n    \"nmbiNumber\": \"\"\n  },\n  \"paymentMethod\": \"manual\",\n  \"registeredVia\": \"crm\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/registrations",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "registrations"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations"
+              ]
             },
             "description": "lineItems is events-only (not courses) and CRM-only. tierKey is one of MEMBER | NON_MEMBER | EARLY_BIRD_MEMBER | EARLY_BIRD_NON_MEMBER | STUDENT | GROUP_STUDENT. Same deferred profile/payment semantics as the single-tier request above."
           }
@@ -415,18 +788,34 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"attendee@example.com\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"phone\": \"\",\n  \"nmbiNumber\": \"\",\n  \"addressLine1\": \"\",\n  \"townCity\": \"\",\n  \"countyState\": \"\",\n  \"eircode\": \"\",\n  \"country\": \"Ireland\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/registrations/attendee-duplicate-check",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "registrations", "attendee-duplicate-check"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations",
+                "attendee-duplicate-check"
+              ]
             },
             "description": "Read-only passthrough to profile-service's exact/fuzzy duplicate scoring - never creates a Profile. Not currently called by createRegistration itself (that runs the same check server-side at intake regardless); this endpoint exists for a caller that wants to pre-check before submitting. email is required. Resolves to { resolution: \"exact\", profileId, membershipNumber } | { resolution: \"review\", candidates: [{ profileId, membershipNumber, name, email, score, classification }] } | { resolution: \"none\" }."
           }
@@ -435,11 +824,23 @@
           "name": "Cancel Registration",
           "request": {
             "method": "PUT",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/registrations/{{registrationId}}/cancel",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "registrations", "{{registrationId}}", "cancel"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations",
+                "{{registrationId}}",
+                "cancel"
+              ]
             }
           }
         },
@@ -448,18 +849,35 @@
           "request": {
             "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"decision\": \"LINK\",\n  \"candidateProfileId\": \"\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/registrations/{{registrationId}}/approve",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "registrations", "{{registrationId}}", "approve"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations",
+                "{{registrationId}}",
+                "approve"
+              ]
             },
             "description": "Only proceeds when the registration is currently approvalStatus 'pending_review' (atomically claimed to 'processing' first, released back to 'pending_review' on failure). Body is only required when duplicateReview.status === 'POTENTIAL_MATCH': decision is 'LINK' (with candidateProfileId - one of duplicateReview.matchSummary's profileId values) or 'CREATE_NEW'. For any other duplicateReview.status (EXACT_MATCH/CONFIRMED_LINK/NO_MATCH) the body is ignored - send {} or omit it. Resolves/creates/links the attendee Profile, captures the authorized Stripe PaymentIntent or posts the recorded manual/comp/invoice payment to the GL, and sets status='confirmed', approvalStatus='approved'."
           }
@@ -468,11 +886,23 @@
           "name": "Reject Registration",
           "request": {
             "method": "PUT",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/registrations/{{registrationId}}/reject",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "registrations", "{{registrationId}}", "reject"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations",
+                "{{registrationId}}",
+                "reject"
+              ]
             },
             "description": "Only proceeds when the registration is currently approvalStatus 'pending_review'. No request body. Releases the Stripe authorization (cancelPaymentIntent - no refund, since nothing was captured) or voids the recorded-but-unposted manual/comp/invoice payment, then sets status='cancelled', approvalStatus='rejected', isActive=false and frees the seat. No Profile is ever created/touched by this call."
           }
@@ -487,18 +917,35 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"templateId\": \"\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/certificates/{{registrationId}}/issue",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "certificates", "{{registrationId}}", "issue"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "certificates",
+                "{{registrationId}}",
+                "issue"
+              ]
             }
           }
         }
@@ -512,18 +959,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"My Events View\",\n  \"templateType\": \"eventssummary\",\n  \"filters\": {},\n  \"columns\": [\"title\", \"startDate\", \"status\"],\n  \"columnLabels\": {},\n  \"visibleFilters\": [],\n  \"isDefault\": false,\n  \"pinned\": false\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/templates",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "templates"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "templates"
+              ]
             }
           }
         },
@@ -531,12 +993,27 @@
           "name": "Get User Templates",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/templates?type=eventssummary",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "templates"],
-              "query": [{ "key": "type", "value": "eventssummary" }]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "templates"
+              ],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "eventssummary"
+                }
+              ]
             }
           }
         },
@@ -544,11 +1021,22 @@
           "name": "Get Default Template",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/templates/default",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "templates", "default"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "templates",
+                "default"
+              ]
             }
           }
         },
@@ -556,11 +1044,22 @@
           "name": "Get Template by ID",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/templates/{{templateId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "templates", "{{templateId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "templates",
+                "{{templateId}}"
+              ]
             }
           }
         },
@@ -569,18 +1068,34 @@
           "request": {
             "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"My Events View (Updated)\",\n  \"isDefault\": true\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{baseUrl}}/api/templates/{{templateId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "templates", "{{templateId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "templates",
+                "{{templateId}}"
+              ]
             }
           }
         },
@@ -588,11 +1103,22 @@
           "name": "Delete Template",
           "request": {
             "method": "DELETE",
-            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/templates/{{templateId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "templates", "{{templateId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "templates",
+                "{{templateId}}"
+              ]
             }
           }
         }
