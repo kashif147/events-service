@@ -671,8 +671,12 @@ async function getRegistrationsByProfile(req, res, next) {
 
     const registrations = await Registration.find({
       tenantId,
-      profileId: req.params.profileId,
       isDeleted: { $ne: true },
+      // profileId is only resolved at CRM approval (see registration-flow.md),
+      // so a still-pending registration never matches on profileId alone -
+      // duplicateReview.matchedProfileId is set at intake (CONFIRMED_LINK/
+      // EXACT_MATCH) and is what lets a pending registration show up here.
+      $or: [{ profileId: req.params.profileId }, { "duplicateReview.matchedProfileId": req.params.profileId }],
     })
       .sort({ createdAt: -1 })
       .lean();
