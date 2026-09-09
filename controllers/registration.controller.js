@@ -863,23 +863,32 @@ async function approveRegistration(req, res, next) {
 }
 
 /**
- * Re-attempts Stripe payment-method attachment for a pending-review stripe
- * registration. Exists because the CRM Add Attendee drawer confirms the card
- * client-side (stripe.confirmCardPayment) right after createRegistration - if
- * that confirm fails or is abandoned (declined card, closed browser tab,
- * 3DS abandoned), the PaymentIntent is left at requires_payment_method
- * forever and every later /approve attempt throws "PaymentIntent cannot be
- * captured when its status is requires_payment_method" with no way to fix it
- * from the CRM (see registration-flow.md).
+ * (Re-)establishes a capturable Stripe PaymentIntent for a pending-review
+ * registration - two distinct CRM situations both land here:
  *
- * Re-calls createRegistrationPaymentIntent, which account-service now
- * resolves via resolveReusablePaymentAttempt: it reuses the SAME
+ * 1. Already `paymentMethod: "stripe"` but the card was never actually
+ *    confirmed (the Add Attendee drawer's client-side stripe.confirmCardPayment
+ *    failed or was abandoned - declined card, closed tab, 3DS abandoned).
+ *    Left unfixed, the PaymentIntent stays at requires_payment_method forever
+ *    and every /approve attempt throws "PaymentIntent cannot be captured when
+ *    its status is requires_payment_method" (see registration-flow.md).
+ * 2. Registered with `paymentMethod: "manual"/"comp"/"invoice"`, and the CRM
+ *    user now wants to charge a card instead (changed their mind before
+ *    approval). The old manual/comp/invoice Payment was only ever *recorded*
+ *    (deferPosting:true), never posted to the GL - see registrationApproval
+ *    .service.js - so it's safe to void once a real PaymentIntent replaces
+ *    it.
+ *
+ * Re-calls createRegistrationPaymentIntent, which account-service resolves
+ * via resolveReusablePaymentAttempt: for case 1 it reuses the SAME
  * PaymentIntent (still confirmable) rather than creating an orphaned
  * duplicate, or transparently supersedes it with a fresh one if it's truly
- * dead (canceled/expired/succeeded/amount changed). Returns a fresh
- * clientSecret for the drawer to re-run stripe.confirmCardPayment, and
- * syncs paymentStatus from the live PaymentIntent status in case the
- * requires_capture RabbitMQ event never landed (webhook lag, local dev).
+ * dead (canceled/expired/succeeded/amount changed); for case 2 there is no
+ * prior stripe-mode attempt for this registration, so a fresh PaymentIntent
+ * is created. Returns a fresh clientSecret for the drawer to run
+ * stripe.confirmCardPayment against, and syncs paymentStatus/paymentMethod
+ * from the live PaymentIntent status in case the requires_capture RabbitMQ
+ * event never landed (webhook lag, local dev).
  */
 async function retryRegistrationPayment(req, res, next) {
   const { tenantId } = req.ctx;
@@ -889,13 +898,18 @@ async function retryRegistrationPayment(req, res, next) {
     if (registration.approvalStatus !== "pending_review") {
       return next(
         AppError.badRequest(
-          "This registration is not awaiting approval - payment can only be retried before approval/rejection.",
+          "This registration is not awaiting approval - payment can only be captured/retried before approval/rejection.",
         ),
       );
     }
-    if (registration.paymentMethod !== "stripe") {
-      return next(AppError.badRequest("Only stripe registrations can retry payment."));
+
+    const switchingFromManual = registration.paymentMethod !== "stripe";
+    if (switchingFromManual && !(registration.amount > 0)) {
+      // Stripe rejects sub-minimum PaymentIntents - a free/comp registration
+      // has nothing a card payment could actually charge.
+      return next(AppError.badRequest("This registration has no amount to charge - it cannot be switched to card payment."));
     }
+    const previousPaymentId = registration.paymentId;
 
     const { productCode, eventCategoryCode } = await resolveProductMetadata({
       tenantId,
@@ -919,9 +933,32 @@ async function retryRegistrationPayment(req, res, next) {
       purpose: registration.registrationType === "course" ? "courseRegistration" : "eventRegistration",
     });
 
+    if (switchingFromManual) {
+      // Void the superseded manual/comp/invoice Payment now that a real
+      // PaymentIntent has been created to replace it. Best-effort: a failure
+      // here must never undo the PaymentIntent creation that already
+      // succeeded above - it just leaves a stray never-posted manual Payment
+      // record behind, the same as any other superseded attempt.
+      // voidManualRegistrationPayment is also idempotent (a no-op once
+      // already voided/posted), so a later retry can't double-void it.
+      if (previousPaymentId) {
+        await voidManualRegistrationPayment({ req, tenantId, paymentId: previousPaymentId }).catch((err) => {
+          console.warn(
+            "[events-service] failed to void superseded manual/comp/invoice payment on payment-method switch",
+            { registrationId: String(registration._id), paymentId: previousPaymentId, error: err.message },
+          );
+        });
+      }
+      registration.paymentMethod = "stripe";
+    }
+
     if (intent?.paymentIntentId && intent.paymentIntentId !== registration.stripePaymentIntentId) {
       registration.stripePaymentIntentId = intent.paymentIntentId;
-      registration.paymentId = intent.paymentId || registration.paymentId;
+      // account-service's createIntent response names the Payment document
+      // id "id" (see payments.service.js's buildIntentResponse and its
+      // fresh-create return), not "paymentId" - accountService.client.js
+      // passes that response through unchanged.
+      registration.paymentId = intent.id || registration.paymentId;
     }
     // account-service's domain status is "requires_capture" once Stripe has
     // authorized the funds (mirrors payment.status.listener.js's mapping) -
@@ -939,11 +976,12 @@ async function retryRegistrationPayment(req, res, next) {
         clientSecret: intent?.clientSecret || null,
         paymentIntentId: intent?.paymentIntentId || null,
         paymentStatus: registration.paymentStatus,
+        paymentMethod: registration.paymentMethod,
       },
     });
   } catch (error) {
     if (error instanceof AppError) return next(error);
-    return next(appErrorFromUpstream(error, "Failed to retry registration payment"));
+    return next(appErrorFromUpstream(error, "Failed to capture card payment for this registration"));
   }
 }
 
