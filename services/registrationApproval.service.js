@@ -151,6 +151,31 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
     if (createdFreshProfile && finalProfileId) {
       await deleteAttendeeProfile({ tenantId, profileId: finalProfileId }).catch(() => {});
     }
+    // account-service's capture conflict (axios throws directly on the 409 -
+    // capturePaymentIntent above is a thin unwrapped client call) reports the
+    // PaymentIntent's live Stripe status in error.response.data.details.
+    // stripeStatus - most commonly "canceled" because Stripe auto-releases an
+    // uncaptured manual-capture authorization hold a few days after it was
+    // created, which can easily happen if a registration sits pending_review
+    // past that window. claimed.paymentStatus was "authorized" going into
+    // this capture attempt; left uncorrected here it stays stale at
+    // "authorized" forever, which hides the problem from the CRM drawer (its
+    // stripePaymentNotAuthorized gate/Retry Payment UI - see
+    // CreateAttendeeDrawer.jsx - only fires off paymentStatus) and every
+    // future Approve attempt fails identically with "PaymentIntent cannot be
+    // captured from status canceled" and no visible way to fix it.
+    const stripeStatus = paymentError?.response?.data?.details?.stripeStatus;
+    if (claimed.paymentMethod === "stripe" && stripeStatus && stripeStatus !== "requires_capture") {
+      claimed.paymentStatus = stripeStatus === "succeeded" ? "succeeded" : "failed";
+      await claimed.save().catch(() => {});
+      // Give the CRM user a concrete next step instead of a bare Stripe
+      // status string, if we can safely rewrite the upstream message that
+      // appErrorFromUpstream (registration.controller.js) will surface.
+      if (paymentError?.response?.data && stripeStatus === "canceled") {
+        paymentError.response.data.message =
+          "The card authorization for this registration has expired (Stripe releases uncaptured holds after several days) - use Retry Payment on this attendee to charge a new card, then Approve again.";
+      }
+    }
     throw paymentError;
   }
 
