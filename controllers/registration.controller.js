@@ -863,6 +863,91 @@ async function approveRegistration(req, res, next) {
 }
 
 /**
+ * Re-attempts Stripe payment-method attachment for a pending-review stripe
+ * registration. Exists because the CRM Add Attendee drawer confirms the card
+ * client-side (stripe.confirmCardPayment) right after createRegistration - if
+ * that confirm fails or is abandoned (declined card, closed browser tab,
+ * 3DS abandoned), the PaymentIntent is left at requires_payment_method
+ * forever and every later /approve attempt throws "PaymentIntent cannot be
+ * captured when its status is requires_payment_method" with no way to fix it
+ * from the CRM (see registration-flow.md).
+ *
+ * Re-calls createRegistrationPaymentIntent, which account-service now
+ * resolves via resolveReusablePaymentAttempt: it reuses the SAME
+ * PaymentIntent (still confirmable) rather than creating an orphaned
+ * duplicate, or transparently supersedes it with a fresh one if it's truly
+ * dead (canceled/expired/succeeded/amount changed). Returns a fresh
+ * clientSecret for the drawer to re-run stripe.confirmCardPayment, and
+ * syncs paymentStatus from the live PaymentIntent status in case the
+ * requires_capture RabbitMQ event never landed (webhook lag, local dev).
+ */
+async function retryRegistrationPayment(req, res, next) {
+  const { tenantId } = req.ctx;
+  try {
+    const registration = await Registration.findOne({ _id: req.params.id, tenantId });
+    if (!registration) return next(AppError.notFound("Registration not found"));
+    if (registration.approvalStatus !== "pending_review") {
+      return next(
+        AppError.badRequest(
+          "This registration is not awaiting approval - payment can only be retried before approval/rejection.",
+        ),
+      );
+    }
+    if (registration.paymentMethod !== "stripe") {
+      return next(AppError.badRequest("Only stripe registrations can retry payment."));
+    }
+
+    const { productCode, eventCategoryCode } = await resolveProductMetadata({
+      tenantId,
+      registrationType: registration.registrationType,
+      eventId: registration.eventId,
+      courseId: registration.courseId,
+    });
+
+    const intent = await createRegistrationPaymentIntent({
+      req,
+      tenantId,
+      registrationId: String(registration._id),
+      // profileId is still unresolved pre-approval, same as createRegistration's
+      // stripe branch - see registration-flow.md.
+      profileId: undefined,
+      membershipNumber: registration.membershipNumber,
+      amount: registration.amount,
+      currency: registration.currency,
+      productCode,
+      eventCategoryCode,
+      purpose: registration.registrationType === "course" ? "courseRegistration" : "eventRegistration",
+    });
+
+    if (intent?.paymentIntentId && intent.paymentIntentId !== registration.stripePaymentIntentId) {
+      registration.stripePaymentIntentId = intent.paymentIntentId;
+      registration.paymentId = intent.paymentId || registration.paymentId;
+    }
+    // account-service's domain status is "requires_capture" once Stripe has
+    // authorized the funds (mirrors payment.status.listener.js's mapping) -
+    // never downgrade an already-authorized/succeeded registration here.
+    if (intent?.status === "requires_capture") {
+      registration.paymentStatus = "authorized";
+    } else if (!["authorized", "succeeded"].includes(registration.paymentStatus)) {
+      registration.paymentStatus = "pending";
+    }
+    await registration.save();
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        clientSecret: intent?.clientSecret || null,
+        paymentIntentId: intent?.paymentIntentId || null,
+        paymentStatus: registration.paymentStatus,
+      },
+    });
+  } catch (error) {
+    if (error instanceof AppError) return next(error);
+    return next(appErrorFromUpstream(error, "Failed to retry registration payment"));
+  }
+}
+
+/**
  * CRM rejection of a pending-review registration - releases the Stripe
  * authorization (cancelPaymentIntent, no refund since nothing was captured)
  * or voids the recorded-but-unposted manual/comp/invoice payment (nothing
@@ -962,6 +1047,7 @@ module.exports = {
   getMyRegistrations,
   cancelRegistration,
   approveRegistration,
+  retryRegistrationPayment,
   rejectRegistration,
   checkNewAttendeeDuplicates,
 };

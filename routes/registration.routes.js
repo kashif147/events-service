@@ -49,6 +49,11 @@ router.put(
   defaultPolicyMiddleware.requirePermission("events", "write"),
   registrationController.approveRegistration,
 );
+router.post(
+  "/:id/retry-payment",
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  registrationController.retryRegistrationPayment,
+);
 router.put(
   "/:id/reject",
   defaultPolicyMiddleware.requirePermission("events", "write"),
