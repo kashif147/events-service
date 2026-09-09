@@ -157,6 +157,14 @@ const RegistrationSchema = new mongoose.Schema(
       required: true,
     },
     registeredByUserId: { type: String, default: null }, // CRM staff user id, if registeredVia="crm"
+    // Trusted req.ctx.userId of whoever called createRegistration (gateway
+    // x-user-id header, never client body) - set for every registeredVia,
+    // unlike profileId/registeredByUserId. For portal/mobile self-service
+    // this is the attendee's own stable login identity, available even when
+    // no Profile exists yet (Profile is only created/linked at CRM approval -
+    // see registration-flow.md) - the anchor getRegistrationsByUser filters
+    // on so "my registrations" works before/without a Profile.
+    submittedByUserId: { type: String, default: null, index: true },
     isActive: { type: Boolean, default: true },
     isDeleted: { type: Boolean, default: false },
     createdBy: { type: String, default: null },

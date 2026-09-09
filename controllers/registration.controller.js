@@ -371,6 +371,7 @@ async function createRegistration(req, res, next) {
         status: "pending",
         registeredVia,
         registeredByUserId: registeredByUserId || null,
+        submittedByUserId: req.ctx?.userId || req.userId || null,
       });
 
       // 5. Authorize/record payment - never captured/posted here. Only
@@ -708,6 +709,82 @@ async function getRegistrationsByProfile(req, res, next) {
   }
 }
 
+/**
+ * Fetch a single registration by its own _id - the only identifier a
+ * non-member registrant has immediately after createRegistration's response,
+ * since profileId stays null until CRM approval (see registration-flow.md).
+ * Used by the portal's post-registration confirmation/status page instead of
+ * GET /profile/:profileId, which requires a Profile that may not exist yet.
+ */
+async function getRegistrationById(req, res, next) {
+  try {
+    const { tenantId } = req.ctx;
+    const registration = await Registration.findOne({
+      _id: req.params.id,
+      tenantId,
+      isDeleted: { $ne: true },
+    }).lean();
+    if (!registration) return next(AppError.notFound("Registration not found"));
+
+    const [eventsById, coursesById] = await Promise.all([
+      getEventsMapForRegistrations({ tenantId, registrations: [registration] }),
+      getCoursesMapForRegistrations({ tenantId, registrations: [registration] }),
+    ]);
+    const [enriched] = enrichRegistrationsWithEvent([registration], eventsById);
+    enriched.courseTitle = registration.courseId
+      ? coursesById.get(String(registration.courseId))?.title || null
+      : null;
+
+    return res.status(200).json({ success: true, data: enriched });
+  } catch (error) {
+    return next(appErrorFromUpstream(error, "Failed to fetch registration"));
+  }
+}
+
+/**
+ * "My registrations" for the portal/mobile self-service case, keyed on the
+ * caller's own trusted login identity (submittedByUserId) rather than
+ * profileId - works immediately after registering, before/without a Profile
+ * ever existing (Profile is only created/linked at CRM approval - see
+ * registration-flow.md). Mirrors getRegistrationsByProfile's shape/enrichment
+ * so the portal can reuse the same response parsing for either.
+ */
+async function getRegistrationsByUser(req, res, next) {
+  try {
+    const { tenantId } = req.ctx;
+    const { timing } = req.query; // optional: past | current | upcoming
+
+    const registrations = await Registration.find({
+      tenantId,
+      isDeleted: { $ne: true },
+      submittedByUserId: req.params.userId,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const [eventsById, coursesById, sessionsById] = await Promise.all([
+      getEventsMapForRegistrations({ tenantId, registrations }),
+      getCoursesMapForRegistrations({ tenantId, registrations }),
+      getSessionsMapForRegistrations({ tenantId, registrations }),
+    ]);
+
+    const eventTypeIds = [...new Set([...eventsById.values()].map((ev) => ev.eventTypeId).filter(Boolean))];
+    const eventTypesById = eventTypeIds.length
+      ? await resolveLookupNamesByIds(eventTypeIds, req, tenantId).catch(() => new Map())
+      : new Map();
+
+    let enriched = enrichRegistrationsForProfile(registrations, eventsById, coursesById, sessionsById, eventTypesById);
+
+    if (["past", "current", "upcoming"].includes(timing)) {
+      enriched = enriched.filter((reg) => reg.timing === timing);
+    }
+
+    return res.status(200).json({ success: true, data: enriched });
+  } catch (error) {
+    return next(appErrorFromUpstream(error, "Failed to fetch registrations for user"));
+  }
+}
+
 async function cancelRegistration(req, res, next) {
   try {
     const { tenantId } = req.ctx;
@@ -876,6 +953,8 @@ module.exports = {
   createRegistration,
   listRegistrations,
   getRegistrationsByProfile,
+  getRegistrationById,
+  getRegistrationsByUser,
   cancelRegistration,
   approveRegistration,
   rejectRegistration,

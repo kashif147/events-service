@@ -17,6 +17,18 @@ router.get(
   defaultPolicyMiddleware.requirePermission("events", "read"),
   registrationController.getRegistrationsByProfile,
 );
+// Literal routes below must stay registered before GET /:id, or express would
+// capture their path segment as :id instead of routing to them.
+router.get(
+  "/user/:userId",
+  defaultPolicyMiddleware.requirePermission("events", "read"),
+  registrationController.getRegistrationsByUser,
+);
+router.get(
+  "/:id",
+  defaultPolicyMiddleware.requirePermission("events", "read"),
+  registrationController.getRegistrationById,
+);
 router.post(
   "/",
   defaultPolicyMiddleware.requirePermission("events", "create"),
