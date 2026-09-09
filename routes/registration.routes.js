@@ -20,9 +20,9 @@ router.get(
 // Literal routes below must stay registered before GET /:id, or express would
 // capture their path segment as :id instead of routing to them.
 router.get(
-  "/user/:userId",
+  "/mine",
   defaultPolicyMiddleware.requirePermission("events", "read"),
-  registrationController.getRegistrationsByUser,
+  registrationController.getMyRegistrations,
 );
 router.get(
   "/:id",

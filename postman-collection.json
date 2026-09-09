@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Events Service API",
-    "description": "Complete API collection for Events Service (events, sessions, courses, registrations, certificates, filter templates). All routes under /api require authentication (either a gateway-forwarded JWT, or a direct Bearer token if AUTH_BYPASS is not enabled). GET /health and GET /api are unauthenticated.\n\nRegistration/approval workflow (see Registrations folder): creating a registration never creates or links a Profile and never captures/posts payment - it only records a duplicate-detection verdict (duplicateReview.status: EXACT_MATCH | CONFIRMED_LINK | POTENTIAL_MATCH | NO_MATCH) and leaves the registration at approvalStatus 'pending_review'. A Profile is only created/linked, and payment only captured (Stripe) or posted to the GL (manual/comp/invoice), when a CRM user explicitly calls PUT /registrations/:id/approve - for a POTENTIAL_MATCH verdict this call must include a decision ('LINK' with candidateProfileId, or 'CREATE_NEW'). PUT /registrations/:id/reject releases the Stripe authorization (or voids the recorded-but-unposted manual/comp/invoice payment) and cancels the registration instead - no case auto-approves.",
+    "description": "Complete API collection for Events Service (events, sessions, courses, registrations, certificates, filter templates). All routes under /api require authentication (either a gateway-forwarded JWT, or a direct Bearer token if AUTH_BYPASS is not enabled). GET /health and GET /api are unauthenticated.\n\nRegistration/approval workflow (see Registrations folder): creating a registration never creates or links a Profile and never captures/posts payment - it only records a duplicate-detection verdict (duplicateReview.status: EXACT_MATCH | CONFIRMED_LINK | POTENTIAL_MATCH | NO_MATCH) and leaves the registration at approvalStatus 'pending_review'. A Profile is only created/linked, and payment only captured (Stripe) or posted to the GL (manual/comp/invoice), when a CRM user explicitly calls PUT /registrations/:id/approve - for a POTENTIAL_MATCH verdict this call must include a decision ('LINK' with candidateProfileId, or 'CREATE_NEW'). PUT /registrations/:id/reject releases the Stripe authorization (or voids the recorded-but-unposted manual/comp/invoice payment) and cancels the registration instead - no case auto-approves.\n\nLooking up \"my registrations\" (portal/mobile): prefer GET /registrations/mine over GET /registrations/profile/:profileId. profileId stays null until CRM approval creates/links a Profile, so a first-time non-member has nothing to query by immediately after registering - /mine is scoped to the caller's own req.ctx.userId (submittedByUserId, the trusted gateway x-user-id header of whoever called Create Registration - no client-suppliable id, unlike profile/:profileId), which is set for every registration at intake regardless of membership status, since Create Registration itself requires an authenticated caller. It only covers registrations created after this field shipped - older rows predate it and still need the profile-based lookup once/if a Profile resolves. GET /registrations/:id (by the registration's own _id, already returned in Create Registration's response) is the lightest option for a single post-registration confirmation/receipt page, no profileId needed either.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -673,6 +673,63 @@
               ]
             },
             "description": "Every registration (event or course) for this profile, enriched with: title, startDate, endDate, venue, format (Virtual/In-Person/Hybrid), eventTypeId + eventTypeName (resolved via user-service Lookup), eventCategoryLookupCode, cpdCredits, accreditationBody, certificationType, imageUrl, deliveryMode (courses), parentStatus (the Event/Course's own status), and registered sessions. Each row also gets a computed `timing` field (past/current/upcoming) so the portal can show tabs/sections without extra date math; pass ?timing= to filter server-side instead."
+          }
+        },
+        {
+          "name": "Get My Registrations (My Events - works before/without a Profile)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations/mine?timing=upcoming",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations",
+                "user",
+                "{{userId}}"
+              ],
+              "query": [
+                {
+                  "key": "timing",
+                  "value": "upcoming",
+                  "description": "optional: past | current | upcoming - omit to get all",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Same enriched shape as 'Get Registrations by Profile', but keyed on submittedByUserId - the trusted req.ctx.userId (gateway x-user-id header) of whoever called Create Registration, set for EVERY registeredVia at intake. Use this instead of the profile-based lookup for the portal's own 'My Events'/registration-status views: profileId stays null until a CRM user approves the registration and a Profile gets created/linked (see PUT /registrations/:id/approve), so a first-time non-member has no profileId to query by immediately after registering - the caller's own userId, from req.ctx (trusted, gateway x-user-id header) is always available since Create Registration itself requires an authenticated caller. No :userId param - deliberately scoped to the caller's own token, there's no legitimate reason for this route to return anyone else's data. NOTE: only registrations created after this endpoint shipped have submittedByUserId populated; older registrations predate the field and won't show up here (they still work via the profile-based lookup once/if a Profile resolves)."
+          }
+        },
+        {
+          "name": "Get Registration by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations/{{registrationId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "registrations",
+                "{{registrationId}}"
+              ]
+            },
+            "description": "Single registration by its own _id, enriched with eventTitle/eventTypeId/eventCategoryLookupCode/eventStartDate/eventEndDate (events) or courseTitle (courses). Useful for a post-registration confirmation/receipt page: Create Registration's response already returns data.registration._id, so the portal can hold onto that id and poll this endpoint for approvalStatus/status/paymentStatus without needing a profileId or userId at all."
           }
         },
         {

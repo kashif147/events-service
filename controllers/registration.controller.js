@@ -748,16 +748,21 @@ async function getRegistrationById(req, res, next) {
  * ever existing (Profile is only created/linked at CRM approval - see
  * registration-flow.md). Mirrors getRegistrationsByProfile's shape/enrichment
  * so the portal can reuse the same response parsing for either.
+ *
+ * Deliberately takes no :userId path param, unlike /profile/:profileId -
+ * there's no legitimate reason for this route to return anyone's data but the
+ * caller's own, so it's scoped to req.ctx.userId (trusted, from the gateway
+ * x-user-id header) rather than trusting a client-suppliable id.
  */
-async function getRegistrationsByUser(req, res, next) {
+async function getMyRegistrations(req, res, next) {
   try {
-    const { tenantId } = req.ctx;
+    const { tenantId, userId } = req.ctx;
     const { timing } = req.query; // optional: past | current | upcoming
 
     const registrations = await Registration.find({
       tenantId,
       isDeleted: { $ne: true },
-      submittedByUserId: req.params.userId,
+      submittedByUserId: userId,
     })
       .sort({ createdAt: -1 })
       .lean();
@@ -781,7 +786,7 @@ async function getRegistrationsByUser(req, res, next) {
 
     return res.status(200).json({ success: true, data: enriched });
   } catch (error) {
-    return next(appErrorFromUpstream(error, "Failed to fetch registrations for user"));
+    return next(appErrorFromUpstream(error, "Failed to fetch my registrations"));
   }
 }
 
@@ -954,7 +959,7 @@ module.exports = {
   listRegistrations,
   getRegistrationsByProfile,
   getRegistrationById,
-  getRegistrationsByUser,
+  getMyRegistrations,
   cancelRegistration,
   approveRegistration,
   rejectRegistration,

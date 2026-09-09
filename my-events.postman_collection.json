@@ -1,15 +1,121 @@
 {
   "info": {
-    "name": "Events Service - My Events (Registrations by Profile)",
-    "description": "GET /api/registrations/profile/:profileId - every registration (event or course) for a profile, enriched with: title, startDate, endDate, venue, format (Virtual/In-Person/Hybrid derived from isVirtual + per-session overrides), eventTypeId + eventTypeName (resolved from user-service Lookup), eventCategoryLookupCode, cpdCredits, accreditationBody, certificationType, imageUrl, deliveryMode (courses), parentStatus (the Event/Course's own Draft/Published/Cancelled/Completed status - distinct from the registration's own pending/confirmed/cancelled status), and registered sessions. Each row also gets a computed `timing` field (past/current/upcoming); pass ?timing= to filter server-side instead of client-side.",
+    "name": "Events Service - My Events (Mine / Profile / ID)",
+    "description": "Three ways to look up \"my registrations\", in order of preference for the portal's own self-service views:\n\n1. GET /api/registrations/mine - keyed on submittedByUserId, the trusted req.ctx.userId (gateway x-user-id header) of whoever called Create Registration. No :userId param - deliberately scoped to the caller's own token rather than a client-suppliable id, since there's no legitimate reason for this route to return anyone else's data. Set for EVERY registration at intake, regardless of registeredVia or membership status, since Create Registration itself requires an authenticated caller. THIS is what a first-time non-member's registration shows up under - profileId stays null until a CRM user approves the registration (PUT /registrations/:id/approve) and a Profile gets created/linked, so immediately after registering there is no profileId to query by yet. Caveat: only registrations created after this field shipped have submittedByUserId populated - older rows predate it and won't show up here.\n\n2. GET /api/registrations/profile/:profileId - the original lookup, for an existing member who already has a resolved profileId (or duplicateReview.matchedProfileId from an EXACT_MATCH/CONFIRMED_LINK verdict at intake). Still works, still needed for pre-existing data, but incomplete on its own for a brand-new non-member. Unlike /mine, this one does take the id as a client-suppliable path param - fine for now since it mirrors existing CRM-lookup usage, but note it's less strict than /mine.\n\n3. GET /api/registrations/:id - a single registration by its own _id (already returned in Create Registration's response, data.registration._id). No profileId needed at all - the lightest option for a post-registration confirmation/receipt page. NOTE: its response shape is flatter than #1/#2 (see that request's own example below) - it does NOT include venue/format/sessions/timing, just eventTitle/eventTypeId/eventCategoryLookupCode/eventStartDate/eventEndDate (or courseTitle for a course registration).\n\n#1 and #2 both return the same enriched shape: title, startDate, endDate, venue, format (Virtual/In-Person/Hybrid derived from isVirtual + per-session overrides), eventTypeId + eventTypeName (resolved from user-service Lookup), eventCategoryLookupCode, cpdCredits, accreditationBody, certificationType, imageUrl, deliveryMode (courses), parentStatus (the Event/Course's own Draft/Published/Cancelled/Completed status - distinct from the registration's own pending/confirmed/cancelled status), and registered sessions. Each row also gets a computed `timing` field (past/current/upcoming); pass ?timing= to filter server-side instead of client-side.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     { "key": "baseUrl", "value": "http://localhost:4011", "type": "string" },
     { "key": "authToken", "value": "", "type": "string" },
-    { "key": "profileId", "value": "", "type": "string" }
+    { "key": "profileId", "value": "", "type": "string" },
+    { "key": "registrationId", "value": "", "type": "string" }
   ],
   "item": [
+    {
+      "name": "Get My Registrations (My Events) - all - PREFERRED for portal self-service",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/registrations/mine",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "registrations", "mine"]
+        }
+      },
+      "response": [
+        {
+          "name": "200 OK - example (first-time non-member, no Profile yet)",
+          "originalRequest": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations/mine",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations", "mine"]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"_id\": \"6aa18c964b777a64a1d92229\",\n      \"tenantId\": \"tenant-1\",\n      \"registrationType\": \"event\",\n      \"eventId\": \"6a5f344a661573439803dc24\",\n      \"courseId\": null,\n      \"sessionIds\": [],\n      \"quantity\": 1,\n      \"priceCategory\": \"standard\",\n      \"profileId\": null,\n      \"membershipNumber\": null,\n      \"isMemberAtRegistration\": false,\n      \"approvalStatus\": \"pending_review\",\n      \"duplicateReview\": {\n        \"status\": \"NO_MATCH\",\n        \"matchedProfileId\": null\n      },\n      \"submittedByUserId\": \"auth0|64f2c9b1a1b2c3d4e5f6a7b8\",\n      \"amount\": 56000,\n      \"currency\": \"eur\",\n      \"paymentMethod\": \"stripe\",\n      \"paymentStatus\": \"authorized\",\n      \"status\": \"pending\",\n      \"registeredVia\": \"portal\",\n      \"createdAt\": \"2026-09-09T16:43:02.306Z\",\n\n      \"title\": \"Annual Nursing Conference\",\n      \"startDate\": \"2026-12-15T09:00:00.000Z\",\n      \"endDate\": \"2026-12-17T17:00:00.000Z\",\n      \"parentStatus\": \"Published\",\n      \"venue\": \"Convention Center, Downtown\",\n      \"isVirtual\": false,\n      \"format\": \"In-Person\",\n      \"imageUrl\": null,\n      \"deliveryMode\": null,\n      \"eventTypeId\": \"66e5a1b2c3d4e5f6a7b8c9bb\",\n      \"eventTypeName\": \"Conference\",\n      \"eventCategoryLookupCode\": \"CPD\",\n      \"cpdCredits\": 6,\n      \"accreditationBody\": \"NMBI\",\n      \"certificationType\": \"attendance\",\n      \"sessions\": [],\n      \"timing\": \"upcoming\"\n    }\n  ]\n}\n\n// approvalStatus stays \"pending_review\" and profileId stays null until a CRM\n// user calls PUT /registrations/{{registrationId}}/approve - that's expected\n// for a non-member right after registering, not a bug. Show it as e.g.\n// \"Registration submitted - awaiting approval\" rather than treating a null\n// profileId/status:\"pending\" as an error state.\n//\n// Note there is no userId in the request at all - /mine is derived entirely\n// from the caller's own Authorization token server-side (req.ctx.userId)."
+        }
+      ]
+    },
+    {
+      "name": "Get My Registrations (My Events) - upcoming only",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/registrations/mine?timing=upcoming",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "registrations", "mine"],
+          "query": [
+            { "key": "timing", "value": "upcoming", "description": "past | current | upcoming" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get My Registrations (My Events) - past only",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/registrations/mine?timing=past",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "registrations", "mine"],
+          "query": [
+            { "key": "timing", "value": "past", "description": "past | current | upcoming" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get My Registrations (My Events) - current only",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/registrations/mine?timing=current",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "registrations", "mine"],
+          "query": [
+            { "key": "timing", "value": "current", "description": "past | current | upcoming" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Registration by ID - lightest option, no profileId needed",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+        "url": {
+          "raw": "{{baseUrl}}/api/registrations/{{registrationId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "registrations", "{{registrationId}}"]
+        }
+      },
+      "response": [
+        {
+          "name": "200 OK - example (flatter shape than mine/by-profile)",
+          "originalRequest": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/registrations/{{registrationId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "registrations", "{{registrationId}}"]
+            }
+          },
+          "status": "OK",
+          "code": 200,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"_id\": \"6aa18c964b777a64a1d92229\",\n    \"tenantId\": \"tenant-1\",\n    \"registrationType\": \"event\",\n    \"eventId\": \"6a5f344a661573439803dc24\",\n    \"courseId\": null,\n    \"profileId\": null,\n    \"approvalStatus\": \"pending_review\",\n    \"submittedByUserId\": \"auth0|64f2c9b1a1b2c3d4e5f6a7b8\",\n    \"amount\": 56000,\n    \"currency\": \"eur\",\n    \"paymentMethod\": \"stripe\",\n    \"paymentStatus\": \"authorized\",\n    \"status\": \"pending\",\n    \"registeredVia\": \"portal\",\n    \"createdAt\": \"2026-09-09T16:43:02.306Z\",\n\n    \"eventTitle\": \"Annual Nursing Conference\",\n    \"eventTypeId\": \"66e5a1b2c3d4e5f6a7b8c9bb\",\n    \"eventCategoryLookupId\": \"66e5a1b2c3d4e5f6a7b8c9cc\",\n    \"eventCategoryLookupCode\": \"CPD\",\n    \"eventStartDate\": \"2026-12-15T09:00:00.000Z\",\n    \"eventEndDate\": \"2026-12-17T17:00:00.000Z\",\n    \"courseTitle\": null\n  }\n}\n\n// No venue/format/sessions/timing/eventTypeName here, unlike the mine and\n// by-profile list endpoints above - this one is meant for a single receipt/\n// confirmation card right after Create Registration, not the full \"My Events\"\n// list view."
+        }
+      ]
+    },
     {
       "name": "Get Registrations by Profile (My Events) - all",
       "request": {
