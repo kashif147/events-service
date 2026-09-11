@@ -90,8 +90,11 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
     const resolved = await findOrCreateAttendeeProfile({
       tenantId,
       email: snap.email,
+      title: snap.title,
       firstName: snap.firstName,
       lastName: snap.lastName,
+      gender: snap.gender,
+      dateOfBirth: snap.dateOfBirth,
       phone: snap.phone,
       workLocation: snap.workLocation,
       grade: snap.grade,

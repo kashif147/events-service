@@ -103,8 +103,11 @@ const RegistrationSchema = new mongoose.Schema(
       reviewedAt: { type: Date, default: null },
     },
     attendeeSnapshot: {
+      title: { type: String, default: null },
       firstName: { type: String, default: null },
       lastName: { type: String, default: null },
+      gender: { type: String, default: null },
+      dateOfBirth: { type: Date, default: null },
       email: { type: String, default: null },
       // Lowercase/trimmed copy of email, set alongside it at intake - the
       // real identity signal available BEFORE profileId is resolved (see the
