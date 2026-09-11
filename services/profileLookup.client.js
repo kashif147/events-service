@@ -141,20 +141,21 @@ async function getProfileMembershipNumber({ tenantId, profileId }) {
 }
 
 /**
- * Best-effort fill-in of a blank professionalDetails.nmbiNumber on an
- * already-resolved Profile (profile.profileId supplied by the caller - the
- * CRM "search and select an existing profile" attendee-registration path,
- * which never goes through findOrCreateAttendeeProfile's own by-email
- * backfill since it already has a profileId). Swallows its own errors like
+ * Best-effort fill-in of blank professionalDetails.nmbiNumber / personalInfo.
+ * title,gender,dateOfBirth on an already-resolved Profile (profile.profileId
+ * supplied by the caller - the CRM "search and select an existing profile"
+ * path, or a registration whose email exactly matched an existing profile -
+ * both never go through findOrCreateAttendeeProfile's own by-email backfill
+ * since they already have a profileId). Swallows its own errors like
  * getProfileMembershipNumber above, so a sync hiccup never blocks
  * registration - never overwrites a value the profile already has.
  */
-async function syncAttendeeProfileFields({ tenantId, profileId, nmbiNumber }) {
-  if (!nmbiNumber) return null;
+async function syncAttendeeProfileFields({ tenantId, profileId, nmbiNumber, title, gender, dateOfBirth }) {
+  if (!nmbiNumber && !title && !gender && !dateOfBirth) return null;
   try {
     const response = await axios.post(
       `${PROFILE_SERVICE_URL}/api/profile/internal/attendee-profile-fields-sync`,
-      { tenantId, profileId, nmbiNumber },
+      { tenantId, profileId, nmbiNumber, title, gender, dateOfBirth },
       {
         headers: {
           "Content-Type": "application/json",
@@ -169,6 +170,70 @@ async function syncAttendeeProfileFields({ tenantId, profileId, nmbiNumber }) {
     console.error("[profileLookup] syncAttendeeProfileFields failed:", error.message);
     return null;
   }
+}
+
+/**
+ * Real (overwrite, not blank-only) edit of an already-linked attendee
+ * Profile's personalInfo/contactInfo/professionalDetails - used when a CRM
+ * user edits an existing registration's attendee details. Unlike
+ * syncAttendeeProfileFields/deleteAttendeeProfile above, this does NOT
+ * swallow its own errors - the caller (updateRegistrationAttendee) needs to
+ * know whether the profile side actually succeeded so it can tell the CRM
+ * user, rather than silently leaving the Registration and Profile out of
+ * sync with no indication anything went wrong.
+ */
+async function updateAttendeeProfileFields({
+  tenantId,
+  profileId,
+  title,
+  firstName,
+  lastName,
+  gender,
+  dateOfBirth,
+  email,
+  phone,
+  workLocation,
+  grade,
+  nmbiNumber,
+  addressLine1,
+  addressLine2,
+  townCity,
+  countyState,
+  eircode,
+  country,
+}) {
+  const response = await axios.post(
+    `${PROFILE_SERVICE_URL}/api/profile/internal/attendee-profile-fields-update`,
+    {
+      tenantId,
+      profileId,
+      title,
+      firstName,
+      lastName,
+      gender,
+      dateOfBirth,
+      email,
+      phone,
+      workLocation,
+      grade,
+      nmbiNumber,
+      addressLine1,
+      addressLine2,
+      townCity,
+      countyState,
+      eircode,
+      country,
+    },
+    {
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-request": "true",
+        "x-tenant-id": tenantId || "",
+      },
+      timeout: 15000,
+    },
+  );
+  return response.data?.data;
 }
 
 /**
@@ -204,5 +269,6 @@ module.exports = {
   checkAttendeeDuplicates,
   getProfileMembershipNumber,
   syncAttendeeProfileFields,
+  updateAttendeeProfileFields,
   deleteAttendeeProfile,
 };

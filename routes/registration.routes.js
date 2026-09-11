@@ -40,6 +40,11 @@ router.post(
   registrationController.checkNewAttendeeDuplicates,
 );
 router.put(
+  "/:id/attendee",
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  registrationController.updateRegistrationAttendee,
+);
+router.put(
   "/:id/cancel",
   defaultPolicyMiddleware.requirePermission("events", "write"),
   registrationController.cancelRegistration,

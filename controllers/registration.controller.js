@@ -7,6 +7,7 @@ const { AppError } = require("../errors/AppError.js");
 const {
   checkAttendeeDuplicates,
   getProfileMembershipNumber,
+  updateAttendeeProfileFields,
 } = require("../services/profileLookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
 const { resolveLookupNamesByIds } = require("../services/lookup.client.js");
@@ -746,6 +747,125 @@ async function getRegistrationById(req, res, next) {
 }
 
 /**
+ * CRM edit of an already-existing registration's attendee details (title,
+ * name, gender, DOB, contact, work location/grade, NMBI, address) - unlike
+ * createRegistration's attendeeSnapshot write, this OVERWRITES the existing
+ * snapshot rather than only setting it once at intake. When the registration
+ * is already linked to a real Profile (registration.profileId set, i.e. past
+ * approval), the same edit is pushed to profile-service so the two don't
+ * drift apart. The Profile-sync leg is best-effort by design (the
+ * Registration edit itself already succeeded and is the source of truth for
+ * this event's attendee record) - a sync failure is surfaced as a `warning`
+ * on the 200 response rather than failing the whole request, so the CRM user
+ * doesn't lose their edit just because profile-service is briefly down.
+ */
+async function updateRegistrationAttendee(req, res, next) {
+  try {
+    const { tenantId } = req.ctx;
+    const { profile } = req.body || {};
+    if (!profile || !profile.email) {
+      return next(AppError.badRequest("profile.email is required"));
+    }
+
+    const registration = await Registration.findOne({
+      _id: req.params.id,
+      tenantId,
+      isDeleted: { $ne: true },
+    });
+    if (!registration) return next(AppError.notFound("Registration not found"));
+
+    const normalizedEmail = String(profile.email || "").trim().toLowerCase() || null;
+    const currentSnapshot = registration.attendeeSnapshot || {};
+
+    // Same identity guard createRegistration relies on at intake - an edit
+    // that changes the email must not collide with a DIFFERENT active
+    // registration for the same event/course (the partial unique index on
+    // {tenantId, eventId|courseId, attendeeSnapshot.normalizedEmail} would
+    // otherwise reject the save with an opaque E11000).
+    if (normalizedEmail && normalizedEmail !== currentSnapshot.normalizedEmail) {
+      const collisionQuery = {
+        _id: { $ne: registration._id },
+        tenantId,
+        isActive: true,
+        "attendeeSnapshot.normalizedEmail": normalizedEmail,
+      };
+      if (registration.registrationType === "event") {
+        collisionQuery.eventId = registration.eventId;
+      } else {
+        collisionQuery.courseId = registration.courseId;
+      }
+      const collision = await Registration.findOne(collisionQuery).lean();
+      if (collision) {
+        return next(
+          AppError.conflict("Another active registration for this event/course already uses this email"),
+        );
+      }
+    }
+
+    registration.attendeeSnapshot = {
+      title: profile.title || null,
+      firstName: profile.firstName || null,
+      lastName: profile.lastName || null,
+      gender: profile.gender || null,
+      dateOfBirth: profile.dateOfBirth || null,
+      email: profile.email,
+      normalizedEmail,
+      phone: profile.phone || null,
+      workLocation: profile.workLocation || null,
+      grade: profile.grade || null,
+      nmbiNumber: profile.nmbiNumber || null,
+      addressLine1: profile.addressLine1 || null,
+      addressLine2: profile.addressLine2 || null,
+      townCity: profile.townCity || null,
+      countyState: profile.countyState || null,
+      eircode: profile.eircode || null,
+      country: profile.country || null,
+    };
+    registration.markModified("attendeeSnapshot");
+    await registration.save();
+
+    let profileSyncWarning = null;
+    if (registration.profileId) {
+      try {
+        await updateAttendeeProfileFields({
+          tenantId,
+          profileId: registration.profileId,
+          title: profile.title || null,
+          firstName: profile.firstName || null,
+          lastName: profile.lastName || null,
+          gender: profile.gender || null,
+          dateOfBirth: profile.dateOfBirth || null,
+          email: profile.email,
+          phone: profile.phone || null,
+          workLocation: profile.workLocation || null,
+          grade: profile.grade || null,
+          nmbiNumber: profile.nmbiNumber || null,
+          addressLine1: profile.addressLine1 || null,
+          addressLine2: profile.addressLine2 || null,
+          townCity: profile.townCity || null,
+          countyState: profile.countyState || null,
+          eircode: profile.eircode || null,
+          country: profile.country || null,
+        });
+      } catch (err) {
+        console.error("[updateRegistrationAttendee] profile sync failed:", err.message);
+        profileSyncWarning =
+          "Attendee details were saved, but the linked profile could not be updated: " +
+          (err.response?.data?.message || err.message);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: registration,
+      ...(profileSyncWarning ? { warning: profileSyncWarning } : {}),
+    });
+  } catch (error) {
+    return next(appErrorFromUpstream(error, "Failed to update attendee details"));
+  }
+}
+
+/**
  * "My registrations" for the portal/mobile self-service case, keyed on the
  * caller's own trusted login identity (submittedByUserId) rather than
  * profileId - works immediately after registering, before/without a Profile
@@ -1088,6 +1208,7 @@ module.exports = {
   listRegistrations,
   getRegistrationsByProfile,
   getRegistrationById,
+  updateRegistrationAttendee,
   getMyRegistrations,
   cancelRegistration,
   approveRegistration,

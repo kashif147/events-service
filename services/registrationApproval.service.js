@@ -83,8 +83,15 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
   let createdFreshProfile = false;
   if (finalProfileId) {
     finalMembershipNumber = await getProfileMembershipNumber({ tenantId, profileId: finalProfileId });
-    if (snap.nmbiNumber) {
-      await syncAttendeeProfileFields({ tenantId, profileId: finalProfileId, nmbiNumber: snap.nmbiNumber });
+    if (snap.nmbiNumber || snap.title || snap.gender || snap.dateOfBirth) {
+      await syncAttendeeProfileFields({
+        tenantId,
+        profileId: finalProfileId,
+        nmbiNumber: snap.nmbiNumber,
+        title: snap.title,
+        gender: snap.gender,
+        dateOfBirth: snap.dateOfBirth,
+      });
     }
   } else {
     const resolved = await findOrCreateAttendeeProfile({
