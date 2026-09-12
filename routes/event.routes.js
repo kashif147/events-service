@@ -13,6 +13,21 @@ router.get(
 );
 router.post("/", defaultPolicyMiddleware.requirePermission("events", "create"), eventController.createEvent);
 router.put("/:id", defaultPolicyMiddleware.requirePermission("events", "write"), eventController.updateEvent);
+router.put(
+  "/:id/unpublish",
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  eventController.unpublishEvent,
+);
+router.put(
+  "/:id/cancel",
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  eventController.cancelEvent,
+);
+router.put(
+  "/:id/complete",
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  eventController.completeEvent,
+);
 router.delete("/:id", defaultPolicyMiddleware.requirePermission("events", "write"), eventController.softDeleteEvent);
 
 // :id may be the literal "draft" when uploading before the event is first

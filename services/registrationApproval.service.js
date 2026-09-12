@@ -3,7 +3,7 @@ const { AppError } = require("../errors/AppError.js");
 const {
   findOrCreateAttendeeProfile,
   getProfileMembershipNumber,
-  syncAttendeeProfileFields,
+  updateAttendeeProfileFields,
   deleteAttendeeProfile,
 } = require("./profileLookup.client.js");
 const {
@@ -37,6 +37,47 @@ async function releaseRegistrationClaim({ id, tenantId }) {
     { _id: id, tenantId, approvalStatus: "processing" },
     { $set: { approvalStatus: "pending_review" } },
   ).catch(() => {});
+}
+
+/**
+ * Overwrites an already-existing attendee Profile's contact/personal/
+ * professional details with this registration's attendeeSnapshot - run on
+ * every approval that resolves to a pre-existing Profile (never for one
+ * freshly created by this same approval call, which already has these
+ * values), so a returning attendee's latest address/phone/email actually
+ * reaches their Profile instead of only ever being blank-filled. Best-effort:
+ * swallows its own errors (e.g. ATTENDEE_EMAIL_CONFLICT) so a contact-sync
+ * hiccup never blocks payment capture/GL posting or the approval itself -
+ * same pattern getProfileMembershipNumber above already uses in this file.
+ */
+async function syncApprovedProfileContactDetails({ tenantId, profileId, snap }) {
+  try {
+    await updateAttendeeProfileFields({
+      tenantId,
+      profileId,
+      title: snap.title,
+      firstName: snap.firstName,
+      lastName: snap.lastName,
+      gender: snap.gender,
+      dateOfBirth: snap.dateOfBirth,
+      email: snap.email,
+      phone: snap.phone,
+      workLocation: snap.workLocation,
+      grade: snap.grade,
+      nmbiNumber: snap.nmbiNumber,
+      addressLine1: snap.addressLine1,
+      addressLine2: snap.addressLine2,
+      townCity: snap.townCity,
+      countyState: snap.countyState,
+      eircode: snap.eircode,
+      country: snap.country,
+    });
+  } catch (error) {
+    console.error(
+      "[registrationApproval] syncApprovedProfileContactDetails failed:",
+      error.message,
+    );
+  }
 }
 
 /**
@@ -83,16 +124,7 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
   let createdFreshProfile = false;
   if (finalProfileId) {
     finalMembershipNumber = await getProfileMembershipNumber({ tenantId, profileId: finalProfileId });
-    if (snap.nmbiNumber || snap.title || snap.gender || snap.dateOfBirth) {
-      await syncAttendeeProfileFields({
-        tenantId,
-        profileId: finalProfileId,
-        nmbiNumber: snap.nmbiNumber,
-        title: snap.title,
-        gender: snap.gender,
-        dateOfBirth: snap.dateOfBirth,
-      });
-    }
+    await syncApprovedProfileContactDetails({ tenantId, profileId: finalProfileId, snap });
   } else {
     const resolved = await findOrCreateAttendeeProfile({
       tenantId,
@@ -116,6 +148,12 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
     finalProfileId = resolved.profileId;
     finalMembershipNumber = resolved.membershipNumber;
     createdFreshProfile = !!resolved.created;
+    if (!createdFreshProfile) {
+      // findOrCreateAttendeeProfile found this Profile by email and only
+      // blank-fills it - still need the real overwrite for a returning
+      // attendee's updated contact details.
+      await syncApprovedProfileContactDetails({ tenantId, profileId: finalProfileId, snap });
+    }
   }
 
   let finalPaymentStatus;

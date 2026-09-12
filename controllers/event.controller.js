@@ -11,8 +11,31 @@ const {
   determinePriceCategory,
   resolveUnitPriceForEntity,
 } = require("../services/pricingResolution.service.js");
+const { cancelPaymentIntent, voidManualRegistrationPayment } = require("../services/accountService.client.js");
+const { publishRegistrationCancelled } = require("../rabbitMQ/publishers/registration.events.publisher.js");
+const {
+  publishEventCancelled,
+  publishEventCompleted,
+  publishEventUnpublished,
+} = require("../rabbitMQ/publishers/event.lifecycle.publisher.js");
+const { applyAttendanceRollupForCompletedEvent } = require("../services/attendanceRollup.service.js");
+const { maybeIssueCertificatesForCompletedEvent } = require("../services/autoCertificate.service.js");
+const { parseMeetingLink } = require("../services/meetingLinkParser.js");
 
-const PUBLISHED_LOCKED_STATUS_TARGETS = ["Cancelled", "Completed"];
+/** Builds the EventSession.meeting sub-object from a raw pasted joinUrl (the
+ * CreateEventDrawer/ScheduleManagementDrawer "Meeting Link" field) - detects
+ * Zoom/Teams so the attendance sync job knows which API to call, see
+ * meetingLinkParser.js. A falsy joinUrl clears the field entirely. */
+function buildMeetingField(joinUrl, organizerUpn) {
+  if (!joinUrl) {
+    return { provider: null, joinUrl: null, externalMeetingId: null, organizerUpn: null, attendanceSyncStatus: "pending" };
+  }
+  const { provider, externalMeetingId } = parseMeetingLink(joinUrl);
+  // organizerUpn only matters for Teams (Graph looks the meeting up by
+  // organizer + exact joinUrl match - see msGraphMeetings.client.js), but
+  // there's no harm storing it regardless of provider.
+  return { provider, joinUrl, externalMeetingId, organizerUpn: organizerUpn || null, attendanceSyncStatus: "pending" };
+}
 
 // productId/productCode are internal linkage fields into user-service's
 // Product record (used for GL/finance mapping and payment amount
@@ -335,17 +358,19 @@ async function updateEvent(req, res, next) {
     const body = req.body || {};
 
     if (existing.status === "Published") {
+      // Every Published status transition (unpublish/cancel/complete) carries
+      // side effects (bulk registration handling, notifications, refunds,
+      // completion gating) that a bare field write can't safely perform - see
+      // unpublishEvent/cancelEvent/completeEvent below. Only isActive/
+      // description remain editable through the generic route.
       const disallowedKey = Object.keys(body).find(
-        (key) => key !== "status" && key !== "isActive" && key !== "description",
+        (key) => key !== "isActive" && key !== "description",
       );
       if (disallowedKey) {
         return next(
-          AppError.badRequest("Published events can only have their status or active flag changed"),
-        );
-      }
-      if (body.status && !PUBLISHED_LOCKED_STATUS_TARGETS.includes(body.status)) {
-        return next(
-          AppError.badRequest(`Published events can only move to: ${PUBLISHED_LOCKED_STATUS_TARGETS.join(", ")}`),
+          AppError.badRequest(
+            "Published events can only have their active flag or description changed here - use /:id/unpublish, /:id/cancel or /:id/complete to change status",
+          ),
         );
       }
     }
@@ -380,6 +405,237 @@ async function updateEvent(req, res, next) {
     return res.status(200).json({ success: true, data: omitProductFields(event) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to update event"));
+  }
+}
+
+/** Latest session date for a multi-day event, else the event's own endDate. */
+async function getLastRelevantDate(tenantId, eventId, event) {
+  const latestSession = await EventSession.findOne({ tenantId, eventId, isDeleted: { $ne: true } })
+    .sort({ date: -1 })
+    .select("date")
+    .lean();
+  return latestSession?.date || event.endDate;
+}
+
+async function unpublishEvent(req, res, next) {
+  try {
+    const { tenantId, userId } = req.ctx;
+    const existing = await Event.findOne({
+      _id: req.params.id,
+      tenantId,
+      isDeleted: { $ne: true },
+    });
+    if (!existing) return next(AppError.notFound("Event not found"));
+    if (existing.status !== "Published") {
+      return next(AppError.badRequest("Only Published events can be unpublished"));
+    }
+
+    // Registrations are a separate collection keyed by eventId - moving the
+    // event back to Draft to make changes has no effect on them, nothing to
+    // migrate/touch here.
+    const event = await Event.findOneAndUpdate(
+      { _id: req.params.id, tenantId },
+      { $set: { status: "Draft", updatedBy: userId, updatedByEmail: req.user?.email || null } },
+      { new: true },
+    );
+
+    try {
+      await publishEventUnpublished(event, tenantId);
+    } catch (err) {
+      console.error("[events-service] failed to publish event.unpublished", err.message);
+    }
+
+    return res.status(200).json({ success: true, data: omitProductFields(event) });
+  } catch (error) {
+    return next(AppError.internalServerError(error.message || "Failed to unpublish event"));
+  }
+}
+
+/**
+ * Whether this registration ever had real money move (a captured Stripe
+ * charge, or a manual/comp/invoice payment actually posted to the GL at
+ * approval - see registrationApproval.service.js's finalizeRegistrationApproval
+ * for the paymentStatus mapping this depends on: stripe->"succeeded",
+ * manual/invoice->"manual", comp->"waived"). Only these are refund
+ * candidates; "waived" (comp) had nothing collected, and pending
+ * (not-yet-approved) registrations only ever have an uncaptured authorization
+ * hold or an unposted manual payment - see releasePendingRegistrationPayment.
+ */
+function isRefundableConfirmedRegistration(registration) {
+  if (registration.status !== "confirmed") return false;
+  if (registration.paymentMethod === "stripe") return registration.paymentStatus === "succeeded";
+  if (["manual", "comp", "invoice"].includes(registration.paymentMethod)) {
+    return registration.paymentStatus === "manual";
+  }
+  return false;
+}
+
+/**
+ * For a registration that never made it past CRM approval (status:"pending"),
+ * release whatever was held rather than refund anything actually posted -
+ * mirrors rejectRegistration's exact logic, since nothing was captured/posted
+ * for a pending registration.
+ */
+async function releasePendingRegistrationPayment(req, tenantId, registration) {
+  if (registration.paymentMethod === "stripe") {
+    if (registration.stripePaymentIntentId) {
+      await cancelPaymentIntent({ req, tenantId, paymentIntentId: registration.stripePaymentIntentId });
+    }
+  } else if (registration.paymentId) {
+    await voidManualRegistrationPayment({ req, tenantId, paymentId: registration.paymentId });
+  }
+}
+
+async function cancelEvent(req, res, next) {
+  try {
+    const { tenantId, userId } = req.ctx;
+    const existing = await Event.findOne({
+      _id: req.params.id,
+      tenantId,
+      isDeleted: { $ne: true },
+    });
+    if (!existing) return next(AppError.notFound("Event not found"));
+    if (existing.status !== "Published") {
+      return next(AppError.badRequest("Only Published events can be cancelled"));
+    }
+
+    const registrations = await Registration.find({
+      tenantId,
+      eventId: existing._id,
+      isActive: true,
+      status: { $in: ["pending", "confirmed"] },
+    });
+
+    const refundCandidates = [];
+    for (const registration of registrations) {
+      const wasConfirmed = registration.status === "confirmed";
+      const refundable = wasConfirmed && isRefundableConfirmedRegistration(registration);
+
+      registration.status = "cancelled";
+      registration.isActive = false;
+      await registration.save();
+
+      if (!wasConfirmed) {
+        // Never captured/posted - release the hold/void the unposted
+        // payment instead of creating a refund candidate for it.
+        try {
+          await releasePendingRegistrationPayment(req, tenantId, registration);
+        } catch (err) {
+          console.error("[events-service] failed to release pending payment during event cancel", {
+            registrationId: String(registration._id),
+            error: err.message,
+          });
+        }
+      } else if (refundable) {
+        refundCandidates.push({
+          registrationId: registration._id,
+          paymentId: registration.paymentId,
+          stripePaymentIntentId: registration.stripePaymentIntentId,
+          paymentMethod: registration.paymentMethod,
+          amount: registration.amount,
+          currency: registration.currency,
+          profileId: registration.profileId,
+          membershipNumber: registration.membershipNumber,
+        });
+      }
+
+      try {
+        await publishRegistrationCancelled(registration, tenantId);
+      } catch (err) {
+        console.error("[events-service] failed to publish registration.cancelled during event cancel", {
+          registrationId: String(registration._id),
+          error: err.message,
+        });
+      }
+    }
+
+    const event = await Event.findOneAndUpdate(
+      { _id: req.params.id, tenantId },
+      { $set: { status: "Cancelled", updatedBy: userId, updatedByEmail: req.user?.email || null } },
+      { new: true },
+    );
+
+    try {
+      await publishEventCancelled(event, refundCandidates, tenantId);
+    } catch (err) {
+      console.error("[events-service] failed to publish event.cancelled", err.message);
+    }
+
+    return res.status(200).json({ success: true, data: omitProductFields(event) });
+  } catch (error) {
+    return next(AppError.internalServerError(error.message || "Failed to cancel event"));
+  }
+}
+
+/**
+ * Shared by the dedicated /:id/complete endpoint and the completion sweep job
+ * (jobs/eventCompletionSweep.js) - the atomic status-guarded update is what
+ * makes it safe for both to race (a manual complete and the sweep firing at
+ * the same moment): whichever gets there first wins, the loser's
+ * findOneAndUpdate matches nothing and this returns null rather than erroring.
+ */
+async function completeEventById({ event, tenantId, actorId, actorEmail }) {
+  const updated = await Event.findOneAndUpdate(
+    { _id: event._id, tenantId, status: "Published" },
+    { $set: { status: "Completed", updatedBy: actorId || null, updatedByEmail: actorEmail || null } },
+    { new: true },
+  );
+  if (!updated) return null;
+
+  try {
+    await applyAttendanceRollupForCompletedEvent({ event: updated, tenantId });
+  } catch (err) {
+    console.error("[events-service] failed to apply attendance rollup on completion", err.message);
+  }
+
+  try {
+    await maybeIssueCertificatesForCompletedEvent({ event: updated, tenantId });
+  } catch (err) {
+    console.error("[events-service] failed to auto-issue certificates on completion", err.message);
+  }
+
+  try {
+    await publishEventCompleted(updated, tenantId);
+  } catch (err) {
+    console.error("[events-service] failed to publish event.completed", err.message);
+  }
+
+  return updated;
+}
+
+async function completeEvent(req, res, next) {
+  try {
+    const { tenantId, userId } = req.ctx;
+    const existing = await Event.findOne({
+      _id: req.params.id,
+      tenantId,
+      isDeleted: { $ne: true },
+    });
+    if (!existing) return next(AppError.notFound("Event not found"));
+    if (existing.status !== "Published") {
+      return next(AppError.badRequest("Only Published events can be marked Completed"));
+    }
+
+    const lastRelevantDate = await getLastRelevantDate(tenantId, existing._id, existing);
+    if (lastRelevantDate && new Date() < new Date(lastRelevantDate)) {
+      return next(
+        AppError.badRequest("This event cannot be marked Completed until its last day/date has passed"),
+      );
+    }
+
+    const event = await completeEventById({
+      event: existing,
+      tenantId,
+      actorId: userId,
+      actorEmail: req.user?.email || null,
+    });
+    if (!event) {
+      return next(AppError.conflict("This event's status changed concurrently - please retry"));
+    }
+
+    return res.status(200).json({ success: true, data: omitProductFields(event) });
+  } catch (error) {
+    return next(AppError.internalServerError(error.message || "Failed to complete event"));
   }
 }
 
@@ -429,6 +685,8 @@ async function addSession(req, res, next) {
       memberPrice,
       nonMemberPrice,
       pricingTiers,
+      joinUrl,
+      organizerUpn,
     } = req.body || {};
     if (!label || !date) {
       return next(AppError.badRequest("label and date are required"));
@@ -454,6 +712,7 @@ async function addSession(req, res, next) {
       memberPrice,
       nonMemberPrice,
       pricingTiers,
+      meeting: buildMeetingField(joinUrl, organizerUpn),
       createdBy: userId,
       updatedBy: userId,
     });
@@ -482,6 +741,21 @@ async function updateSession(req, res, next) {
       } catch (validationError) {
         return next(validationError);
       }
+    }
+
+    // Only touch `meeting` when the caller actually sent joinUrl/organizerUpn
+    // - an update that doesn't mention either (e.g. just a time change) must
+    // not clobber an existing meeting link/provider back to null. A joinUrl
+    // rebuilds the whole sub-object (provider/externalMeetingId depend on
+    // it); organizerUpn alone (added/corrected without re-pasting the link)
+    // only needs a targeted dot-path $set.
+    if (Object.prototype.hasOwnProperty.call(body, "joinUrl")) {
+      body.meeting = buildMeetingField(body.joinUrl, body.organizerUpn);
+      delete body.joinUrl;
+      delete body.organizerUpn;
+    } else if (Object.prototype.hasOwnProperty.call(body, "organizerUpn")) {
+      body["meeting.organizerUpn"] = body.organizerUpn || null;
+      delete body.organizerUpn;
     }
 
     // Caller is explicitly clearing this session's own price (e.g. switching
@@ -595,6 +869,11 @@ module.exports = {
   getEventPriceQuote,
   createEvent,
   updateEvent,
+  unpublishEvent,
+  cancelEvent,
+  completeEvent,
+  completeEventById,
+  getLastRelevantDate,
   softDeleteEvent,
   addSession,
   updateSession,

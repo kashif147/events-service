@@ -37,9 +37,20 @@ const EventSchema = new mongoose.Schema(
     accreditationBody: { type: String, default: null },
     certificationType: { type: String, default: null },
     autoIssueOnFinish: { type: Boolean, default: true },
+    // communication-service Template id used when auto-issuing a certificate
+    // on completion (services/autoCertificate.service.js) - the manual
+    // issueCertificate route takes templateId as a per-call request param
+    // instead (a CRM user picks it each time), but auto-issuance has no
+    // caller to supply one, so it has to live on the Event.
+    certificateTemplateId: { type: String, default: null },
     // Multi-day only: whether attendees may register for a subset of days
     // (true) or must register for every day (false, default).
     allowPartialAttendance: { type: Boolean, default: false },
+    // Online-attendance completion threshold (Zoom/Teams auto-tracking) -
+    // an attendee's connectedMinutes/scheduledMinutes*100 for a session must
+    // reach this percentage to count as "attended" for that session. See
+    // services/attendanceRollup.service.js.
+    attendanceMinPercent: { type: Number, default: 80, min: 0, max: 100 },
     // Multi-day only, and only meaningful when allowPartialAttendance is
     // true: whether each day carries its own memberPrice/nonMemberPrice (on
     // its EventSession) rather than one price for the whole event.

@@ -1,8 +1,7 @@
 const Registration = require("../models/registration.model.js");
-const Certificate = require("../models/certificate.model.js");
+const Event = require("../models/event.model.js");
 const { AppError } = require("../errors/AppError.js");
-const { generateCertificateLetter } = require("../services/communicationService.client.js");
-const { publishCertificateIssued } = require("../rabbitMQ/publishers/registration.events.publisher.js");
+const { createCertificateForRegistration } = require("../services/certificateIssuance.service.js");
 
 const FORWARDED_AUTH_HEADERS = [
   "authorization",
@@ -38,24 +37,18 @@ async function issueCertificate(req, res, next) {
     });
     if (!registration) return next(AppError.notFound("Registration not found"));
 
-    const letter = await generateCertificateLetter({
-      authHeaders: extractAuthHeaders(req),
-      profileId: registration.profileId,
-      templateId,
-      registrationId: String(registration._id),
-    });
+    const event = registration.eventId
+      ? await Event.findOne({ _id: registration.eventId, tenantId }).lean()
+      : null;
 
-    const certificate = await Certificate.create({
+    const certificate = await createCertificateForRegistration({
       tenantId,
-      registrationId: registration._id,
-      profileId: registration.profileId,
-      issuedAt: new Date(),
-      generatedLetterId: letter?.letterId || letter?._id || null,
-      status: "issued",
-      createdBy: userId,
+      actorId: userId,
+      registration,
+      event,
+      templateId,
+      authHeaders: extractAuthHeaders(req),
     });
-
-    await publishCertificateIssued(certificate, registration, tenantId);
 
     return res.status(201).json({ success: true, data: certificate });
   } catch (error) {

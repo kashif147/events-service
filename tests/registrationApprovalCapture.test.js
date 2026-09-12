@@ -6,7 +6,10 @@ jest.mock("../services/accountService.client.js");
 jest.mock("../services/profileLookup.client.js");
 
 const { capturePaymentIntent } = require("../services/accountService.client.js");
-const { getProfileMembershipNumber } = require("../services/profileLookup.client.js");
+const {
+  getProfileMembershipNumber,
+  updateAttendeeProfileFields,
+} = require("../services/profileLookup.client.js");
 
 const app = require("../app");
 const Registration = require("../models/registration.model.js");
@@ -104,5 +107,62 @@ describe("PUT /registrations/:id/approve - capture of an expired/canceled author
     const updated = await Registration.findById(registration._id);
     expect(updated.paymentStatus).toBe("authorized");
     expect(updated.approvalStatus).toBe("pending_review");
+  });
+});
+
+describe("PUT /registrations/:id/approve - syncing contact details onto an already-linked Profile", () => {
+  it("overwrites the matched Profile's contact details with this registration's attendeeSnapshot", async () => {
+    const registration = await createAuthorizedRegistration({
+      duplicateReview: { status: "EXACT_MATCH", matchedProfileId: "profile-1" },
+      attendeeSnapshot: {
+        email: "attendee@example.com",
+        normalizedEmail: "attendee@example.com",
+        phone: "+353871234567",
+        addressLine1: "New Address Line 1",
+        townCity: "Cork",
+      },
+    });
+    getProfileMembershipNumber.mockResolvedValue("M-123");
+    updateAttendeeProfileFields.mockResolvedValue({ updated: true, profileId: "profile-1" });
+    capturePaymentIntent.mockResolvedValue({ status: "succeeded" });
+
+    const res = await request(app)
+      .put(`/api/registrations/${registration._id}/approve`)
+      .set("Authorization", authHeader());
+
+    expect(res.status).toBe(200);
+    expect(updateAttendeeProfileFields).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: TENANT_ID,
+        profileId: "profile-1",
+        email: "attendee@example.com",
+        phone: "+353871234567",
+        addressLine1: "New Address Line 1",
+        townCity: "Cork",
+      }),
+    );
+
+    const updated = await Registration.findById(registration._id);
+    expect(updated.approvalStatus).toBe("approved");
+    expect(updated.profileId).toBe("profile-1");
+  });
+
+  it("does not fail approval when the Profile contact-details sync rejects", async () => {
+    const registration = await createAuthorizedRegistration();
+    getProfileMembershipNumber.mockResolvedValue("M-123");
+    updateAttendeeProfileFields.mockRejectedValue(
+      Object.assign(new Error("Another profile already uses this email address"), {
+        code: "ATTENDEE_EMAIL_CONFLICT",
+      }),
+    );
+    capturePaymentIntent.mockResolvedValue({ status: "succeeded" });
+
+    const res = await request(app)
+      .put(`/api/registrations/${registration._id}/approve`)
+      .set("Authorization", authHeader());
+
+    expect(res.status).toBe(200);
+    const updated = await Registration.findById(registration._id);
+    expect(updated.approvalStatus).toBe("approved");
   });
 });

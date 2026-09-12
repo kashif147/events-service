@@ -168,6 +168,37 @@ const RegistrationSchema = new mongoose.Schema(
     // see registration-flow.md) - the anchor getRegistrationsByUser filters
     // on so "my registrations" works before/without a Profile.
     submittedByUserId: { type: String, default: null, index: true },
+    // Per-session attendance record - one entry per sessionId, appended by
+    // QR self-check-in (method:"qr") or Zoom/Teams auto-tracking
+    // (method:"zoom"|"teams"), or upserted by a manual correction
+    // (method:"manual-attendee"|"manual-crm"). This is the live/authoritative
+    // per-session truth at all times. The top-level `status` field's
+    // "attended"/"no-show" values are a ROLLUP computed once, at event
+    // completion (see attendanceRollup.service.js's
+    // computeRegistrationAttendanceRollup, called from event.controller.js's
+    // completeEventById) - never flipped speculatively mid-event off partial
+    // sessionAttendance data, since allowPartialAttendance means a
+    // registration's overall pass/fail can only be judged once all its
+    // required sessions have occurred.
+    sessionAttendance: {
+      type: [
+        {
+          sessionId: { type: mongoose.Schema.Types.ObjectId, ref: "EventSession", required: true },
+          status: { type: String, enum: ["attended", "absent"], required: true },
+          method: {
+            type: String,
+            enum: ["qr", "zoom", "teams", "manual-attendee", "manual-crm"],
+            required: true,
+          },
+          markedAt: { type: Date, default: Date.now },
+          markedBy: { type: String, default: null }, // userId for manual-crm, null for self/auto methods
+          connectedMinutes: { type: Number, default: null }, // zoom/teams only
+          scheduledMinutes: { type: Number, default: null }, // zoom/teams only
+          connectedPercent: { type: Number, default: null }, // zoom/teams only
+        },
+      ],
+      default: [],
+    },
     isActive: { type: Boolean, default: true },
     isDeleted: { type: Boolean, default: false },
     createdBy: { type: String, default: null },

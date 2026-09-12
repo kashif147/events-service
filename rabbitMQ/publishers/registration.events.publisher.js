@@ -59,7 +59,11 @@ async function publishRegistrationCancelled(registration, tenantId) {
   return publish(ROUTING_KEYS.REGISTRATION_CANCELLED, registrationPayload(registration), tenantId);
 }
 
-async function publishCertificateIssued(certificate, registration, tenantId) {
+// `event` is optional (additive payload fields only) so this stays backward
+// compatible with any caller that doesn't have the Event doc loaded.
+// profile-service's certificateIssued listener uses these to build a
+// Qualification record without ever querying events-service's own DB.
+async function publishCertificateIssued(certificate, registration, tenantId, event) {
   return publish(
     ROUTING_KEYS.CERTIFICATE_ISSUED,
     {
@@ -68,6 +72,12 @@ async function publishCertificateIssued(certificate, registration, tenantId) {
       profileId: registration.profileId,
       tenantId,
       generatedLetterId: certificate.generatedLetterId,
+      issuedAt: certificate.issuedAt,
+      eventId: event ? String(event._id) : null,
+      eventTitle: event?.title || null,
+      certificationType: event?.certificationType || null,
+      cpdCredits: event?.cpdCredits ?? null,
+      accreditationBody: event?.accreditationBody || null,
     },
     tenantId,
   );

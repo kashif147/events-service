@@ -56,6 +56,10 @@ if (process.env.RABBIT_URL) {
       return setupConsumers();
     })
     .then(() => {
+      const { startEventCompletionSweep } = require("./jobs/eventCompletionSweep.js");
+      const { startOnlineAttendanceSyncSweep } = require("./jobs/onlineAttendanceSyncSweep.js");
+      startEventCompletionSweep();
+      startOnlineAttendanceSyncSweep();
       console.log("✅ RabbitMQ fully initialized with middleware");
     })
     .catch((error) => {
@@ -65,12 +69,20 @@ if (process.env.RABBIT_URL) {
 
   process.on("SIGTERM", async () => {
     console.log("⏹️  SIGTERM received, shutting down gracefully...");
+    const { stopEventCompletionSweep } = require("./jobs/eventCompletionSweep.js");
+    const { stopOnlineAttendanceSyncSweep } = require("./jobs/onlineAttendanceSyncSweep.js");
+    stopEventCompletionSweep();
+    stopOnlineAttendanceSyncSweep();
     await shutdownEventSystem();
     process.exit(0);
   });
 
   process.on("SIGINT", async () => {
     console.log("⏹️  SIGINT received, shutting down gracefully...");
+    const { stopEventCompletionSweep } = require("./jobs/eventCompletionSweep.js");
+    const { stopOnlineAttendanceSyncSweep } = require("./jobs/onlineAttendanceSyncSweep.js");
+    stopEventCompletionSweep();
+    stopOnlineAttendanceSyncSweep();
     await shutdownEventSystem();
     process.exit(0);
   });
@@ -105,6 +117,10 @@ app.use((err, req, res, next) => {
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "UP" });
 });
+
+// Public (unauthenticated) - the check-in token itself is the credential,
+// same reasoning /health and GET /api already get.
+app.use("/api/public", require("./routes/publicCheckin.routes.js"));
 
 app.get("/api", (req, res) => {
   res.json({

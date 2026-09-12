@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const registrationController = require("../controllers/registration.controller.js");
+const checkinController = require("../controllers/checkin.controller.js");
 const { defaultPolicyMiddleware } = require("../middlewares/policy.middleware.js");
 
 // "events:create"/"events:read"/"events:write" must be attached to both CRM and
@@ -63,6 +64,25 @@ router.put(
   "/:id/reject",
   defaultPolicyMiddleware.requirePermission("events", "write"),
   registrationController.rejectRegistration,
+);
+
+// Attendance - QR generation/CRM marking need write permission; self-marking
+// only needs read (any authenticated attendee), ownership-checked inside the
+// controller against submittedByUserId.
+router.get(
+  "/:id/sessions/:sessionId/checkin-qr",
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  checkinController.getCheckinQr,
+);
+router.put(
+  "/:id/sessions/:sessionId/attendance",
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  checkinController.markAttendanceCrm,
+);
+router.post(
+  "/:id/sessions/:sessionId/attendance/self",
+  defaultPolicyMiddleware.requirePermission("events", "read"),
+  checkinController.markAttendanceSelf,
 );
 
 module.exports = router;

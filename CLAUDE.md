@@ -49,6 +49,15 @@ via npm.
 ### RabbitMQ
 @.claude/rules/rabbitmq.md
 
+### Scheduled jobs
+@.claude/rules/scheduled-jobs.md
+
+### Attendance
+@.claude/rules/attendance.md
+
+### Certificates and qualification
+@.claude/rules/certificates-and-qualification.md
+
 ### Grid "Save View" templates
 @.claude/rules/grid-templates.md
 
