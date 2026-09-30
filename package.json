@@ -26,9 +26,9 @@
   "license": "ISC",
   "dependencies": {
     "@azure/storage-blob": "^12.31.0",
-    "@membership/policy-middleware": "git+https://github.com/kashif147/policy-middleware.git#gateway",
-    "@projectShell/logging-lib": "git+https://github.com/kashif147/logging-lib.git#main",
-    "@projectShell/rabbitmq-middleware": "git+https://github.com/kashif147/rabbitmq-middleware.git#main",
+    "@membership/policy-middleware": "git+https://github.com/kashif147/policy-middleware.git#1d4a3b991c6bb3374e424e220f745b48d41e3ee7",
+    "@projectShell/logging-lib": "git+https://github.com/kashif147/logging-lib.git#5fd251bde4ad08ba71cf9844656b5bc126e13b43",
+    "@projectShell/rabbitmq-middleware": "git+https://github.com/kashif147/rabbitmq-middleware.git#db70fb8ae7a6e62f2a96df1f68b41ec4944d5123",
     "amqplib": "^0.10.9",
     "axios": "^1.16.1",
     "cors": "^2.8.5",
