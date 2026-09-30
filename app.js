@@ -14,6 +14,7 @@ const session = require("express-session");
 const loggerMiddleware = require("./middlewares/logger.mw");
 const responseMiddleware = require("./middlewares/response.mw");
 const { authenticate } = require("./middlewares/auth");
+const { tenantContextWarn } = require("./middlewares/tenantContext.mw");
 const { corsMiddleware, corsErrorHandler } = require("./config/cors");
 
 var app = express();
@@ -137,6 +138,7 @@ app.get("/api", (req, res) => {
 });
 
 app.use(authenticate);
+app.use(tenantContextWarn);
 app.use("/api", require("./routes/index"));
 
 app.use(function (req, res, next) {
