@@ -29,9 +29,10 @@ services:
 
     environment:
       LOG_ROOT: /var/log/projectshell
+      POLICY_MW_LOG_SERVICE_NAME: policy-middleware-events
 
     volumes:
-      - /home/deploy/logs:/var/log/projectshell
+      - ../../logs:/var/log/projectshell
     restart: always
 
     networks:
