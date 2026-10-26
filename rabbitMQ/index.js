@@ -49,7 +49,7 @@ async function setupConsumers() {
         routingKey: context.routingKey,
         queue: PAYMENT_QUEUE,
       });
-      await handlePaymentStatusUpdated(payload);
+      await handlePaymentStatusUpdated(payload, context);
     });
 
     await consumer.consume(PAYMENT_QUEUE, { prefetch: 10 });
