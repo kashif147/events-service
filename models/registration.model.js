@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { tenantOwnershipPlugin } = require("./plugins/tenantOwnership.plugin");
 
 const RegistrationSchema = new mongoose.Schema(
   {
@@ -270,5 +271,8 @@ RegistrationSchema.index(
   },
 );
 RegistrationSchema.index({ tenantId: 1, paymentId: 1 });
+
+// Phase A / A15: tenantId is immutable once written (ownership cannot move between tenants).
+RegistrationSchema.plugin(tenantOwnershipPlugin, { modelName: "Registration" });
 
 module.exports = mongoose.model("Registration", RegistrationSchema);

@@ -404,6 +404,8 @@ async function updateEvent(req, res, next) {
 
     return res.status(200).json({ success: true, data: omitProductFields(event) });
   } catch (error) {
+    // Phase A / A15: an ownership-change attempt keeps its 409 TENANT_IMMUTABLE (not a 500).
+    if (error && error.code === "TENANT_IMMUTABLE") return next(error);
     return next(AppError.internalServerError(error.message || "Failed to update event"));
   }
 }
@@ -793,6 +795,8 @@ async function updateSession(req, res, next) {
 
     return res.status(200).json({ success: true, data: omitProductFields(session) });
   } catch (error) {
+    // Phase A / A15: an ownership-change attempt keeps its 409 TENANT_IMMUTABLE (not a 500).
+    if (error && error.code === "TENANT_IMMUTABLE") return next(error);
     return next(AppError.internalServerError(error.message || "Failed to update session"));
   }
 }

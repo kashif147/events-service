@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { PricingTierSchema } = require("./pricingTier.schema.js");
+const { tenantOwnershipPlugin } = require("./plugins/tenantOwnership.plugin");
 
 const EventSessionSchema = new mongoose.Schema(
   {
@@ -48,5 +49,8 @@ const EventSessionSchema = new mongoose.Schema(
 );
 
 EventSessionSchema.index({ tenantId: 1, eventId: 1 });
+
+// Phase A / A15: tenantId is immutable once written (ownership cannot move between tenants).
+EventSessionSchema.plugin(tenantOwnershipPlugin, { modelName: "EventSession" });
 
 module.exports = mongoose.model("EventSession", EventSessionSchema);

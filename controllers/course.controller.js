@@ -88,6 +88,8 @@ async function updateCourse(req, res, next) {
     if (!course) return next(AppError.notFound("Course not found"));
     return res.status(200).json({ success: true, data: course });
   } catch (error) {
+    // Phase A / A15: an ownership-change attempt keeps its 409 TENANT_IMMUTABLE (not a 500).
+    if (error && error.code === "TENANT_IMMUTABLE") return next(error);
     return next(AppError.internalServerError(error.message || "Failed to update course"));
   }
 }
