@@ -30,9 +30,12 @@ a real gateway, Mongo, or RabbitMQ. Follow that pattern (mock RabbitMQ/DB, bypas
 env, hit `app.js` directly with `supertest`) for new route-level tests instead of spinning
 up real infra.
 
-`scripts/` holds one-off maintenance scripts (`migrate-registration-isActive-index.js`,
-`seed-grid-system-default-template.js`) — run with `node scripts/<file>.js` directly, not
-via npm.
+`scripts/` holds one-off maintenance scripts (e.g. `migrate-registration-isActive-index.js`) —
+run with `node scripts/<file>.js` directly, not via npm.
+
+Grid "Save View" system defaults are tenant-owned only, inserted (never overwritten) by
+explicit-tenant, insert-only tooling. The tenantless/`--force` `seed-grid-system-default-template.js`
+is retired; `tests/templateSeedGuard.test.js` keeps it (and the root seed wrapper) out.
 
 ### Auth and authorization
 @.claude/rules/auth-and-authorization.md
