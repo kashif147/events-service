@@ -278,27 +278,28 @@ class EventTemplateService {
     return template.save();
   }
 
-  async getDefaultTemplate(userId, tenantId = null) {
-    const dq = { userId, isDefault: true, "meta.deleted": false };
+  /**
+   * Resolve (never create) the caller's default view for a template type: the user's own isDefault
+   * view, else the system default (tenant-owned first, then the transitional tenantless row), else
+   * null = the client's built-in (code-defined) default. Read-only: it used to persist a blank user
+   * view (columns: []) when the user had no default.
+   */
+  async getDefaultTemplate(userId, tenantId = null, type = "eventssummary") {
+    const resolvedType = String(type == null || type === "" ? "eventssummary" : type).trim().toLowerCase();
+    const dq = { userId, templateType: resolvedType, isDefault: true, "meta.deleted": false };
     Object.assign(dq, tenantOrLegacyMatch(tenantId));
 
-    let template = await Template.findOne(dq);
+    const own = await Template.findOne(dq);
+    if (own) return toTemplateResponse(own);
 
-    if (!template) {
-      template = new Template({
-        userId,
-        tenantId: tenantId || undefined,
-        templateType: "eventssummary",
-        filters: {},
-        columns: [],
-        isDefault: true,
-        pinned: false,
-      });
-
-      template = await template.save();
+    const systemDefault = await findSystemDefaultTemplateDoc(resolvedType, tenantId);
+    if (systemDefault) {
+      const out = toTemplateResponse(systemDefault);
+      out.isDefault = true;
+      return out;
     }
 
-    return template;
+    return null;
   }
 }
 
