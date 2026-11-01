@@ -120,9 +120,12 @@ describeDb("GET /templates/default - zero writes against a real mongod", () => {
   });
   afterAll(async () => {
     await mongoose.disconnect();
-    if (mongod) mongod.kill();
-    await new Promise((r) => setTimeout(r, 300));
-    if (dbPath && dbPath.startsWith(os.tmpdir())) fs.rmSync(dbPath, { recursive: true, force: true });
+    if (mongod) { const exited = new Promise((r) => mongod.once("exit", r)); mongod.kill(); await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]); }
+    try {
+      if (dbPath && dbPath.startsWith(os.tmpdir())) fs.rmSync(dbPath, { recursive: true, force: true });
+    } catch (_) {
+      // best-effort temp cleanup (mongod may still be flushing)
+    }
   });
   beforeEach(async () => {
     await coll().deleteMany({});
