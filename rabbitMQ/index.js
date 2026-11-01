@@ -7,6 +7,7 @@ const {
 const { createRabbitStructuredLogHandlers } = require("@projectShell/logging-lib");
 const bizLogger = require("../config/bizLogger.js");
 const { handlePaymentStatusUpdated } = require("./listeners/payment.status.listener.js");
+const { handleProvisioningStepRequested } = require("./listeners/provisioning.step.listener.js");
 
 async function initEventSystem() {
   try {
@@ -54,6 +55,16 @@ async function setupConsumers() {
 
     await consumer.consume(PAYMENT_QUEUE, { prefetch: 10 });
     console.log("✅ Payment status consumer ready:", PAYMENT_QUEUE);
+
+    // Phase B / P4: provisioning step consumer - IMPLEMENTED, NOT ACTIVE unless PROVISIONING_CONSUMER=on.
+    if (process.env.PROVISIONING_CONSUMER === "on") {
+      const PROVISIONING_QUEUE = "events.provisioning.events";
+      await consumer.createQueue(PROVISIONING_QUEUE, { durable: true });
+      await consumer.bindQueue(PROVISIONING_QUEUE, "provisioning.events", ["tenant.provisioning.step.requested.v1"]);
+      consumer.registerHandler("tenant.provisioning.step.requested.v1", (payload, context) => handleProvisioningStepRequested(payload, context));
+      await consumer.consume(PROVISIONING_QUEUE, { prefetch: 1 });
+      console.log("✅ Provisioning step consumer ready:", PROVISIONING_QUEUE);
+    }
 
     console.log("✅ All consumers set up successfully");
   } catch (error) {
