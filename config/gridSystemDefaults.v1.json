@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "source": {
+    "kind": "crm-manifest",
+    "repo": "ProjectShell-1",
+    "path": "src/config/grid-column-defaults.json",
+    "commit": "7983fed",
+    "pages": [
+      "attendees"
+    ],
+    "pagesSha256": "a1cb417fbb634e290e6ff3a97bceddff48c3a7956c5fe58e6c1e320f6394110f"
+  },
+  "templates": {
+    "attendees": {
+      "name": "System default",
+      "templateType": "attendees",
+      "columns": [
+        "eventType",
+        "eventCategory",
+        "eventName",
+        "eventDate",
+        "status",
+        "totalFee",
+        "paymentStatus",
+        "attendeeName",
+        "email",
+        "mobileNumber",
+        "fullAddress",
+        "workLocation",
+        "grade",
+        "membershipNo",
+        "_actions"
+      ],
+      "columnLabels": {
+        "eventType": "Event Type",
+        "eventCategory": "Event Category",
+        "eventName": "Event",
+        "eventDate": "Event Date",
+        "status": "Registration Status",
+        "totalFee": "Total Fee",
+        "paymentStatus": "Payment Status",
+        "attendeeName": "Attendee Name",
+        "email": "Email",
+        "mobileNumber": "Mobile Number",
+        "fullAddress": "Full Address",
+        "workLocation": "Work Location",
+        "grade": "Grade",
+        "membershipNo": "Membership No",
+        "_actions": "Actions"
+      },
+      "filters": {
+        "eventName": {
+          "operator": "equal_to",
+          "values": []
+        },
+        "eventType": {
+          "operator": "equal_to",
+          "values": []
+        },
+        "eventCategory": {
+          "operator": "equal_to",
+          "values": []
+        },
+        "registrationStatus": {
+          "operator": "equal_to",
+          "values": []
+        },
+        "paymentStatus": {
+          "operator": "equal_to",
+          "values": []
+        },
+        "grade": {
+          "operator": "equal_to",
+          "values": []
+        },
+        "workLocation": {
+          "operator": "equal_to",
+          "values": []
+        },
+        "eventDate": {
+          "operator": "between",
+          "values": []
+        }
+      },
+      "visibleFilters": []
+    }
+  }
+}
