@@ -76,6 +76,7 @@ let sessionA1;
 let sessionA2;
 let sessionOtherEvent;
 let sessionTenantB;
+let sessionTenantBOnEventA;
 
 beforeAll(async () => {
   await mongoose.connect(process.env.MONGO_URI);
@@ -89,6 +90,9 @@ beforeEach(async () => {
   sessionA2 = await EventSession.create({ tenantId: TENANT, eventId: eventA._id, label: "Day 2", date: eventA.endDate });
   sessionOtherEvent = await EventSession.create({ tenantId: TENANT, eventId: eventOther._id, label: "Day 1", date: eventA.startDate });
   sessionTenantB = await EventSession.create({ tenantId: OTHER_TENANT, eventId: eventTenantB._id, label: "Day 1", date: eventA.startDate });
+  // Tenant-B session pointing at tenant A's event id: only the tenantId filter
+  // can reject it (the eventId matches), so the tenant cases are discriminating.
+  sessionTenantBOnEventA = await EventSession.create({ tenantId: OTHER_TENANT, eventId: eventA._id, label: "Day 1", date: eventA.startDate });
   defaultPolicyMiddleware.calls.length = 0;
 });
 
@@ -205,10 +209,12 @@ describe("POST .../attendance/self (PORTAL attendee)", () => {
     expect(await attendanceOf(regTenantB)).toHaveLength(0);
 
     const reg = await makeRegistration();
-    const otherTenantSession = await request(app)
-      .post(selfPath(reg._id, sessionTenantB._id))
-      .set("Authorization", portalA());
-    expect(otherTenantSession.status).toBe(404);
+    for (const foreign of [sessionTenantB, sessionTenantBOnEventA]) {
+      const otherTenantSession = await request(app)
+        .post(selfPath(reg._id, foreign._id))
+        .set("Authorization", portalA());
+      expect(otherTenantSession.status).toBe(404);
+    }
     expect(await attendanceOf(reg)).toHaveLength(0);
   });
 
@@ -372,13 +378,15 @@ describe("PUT .../attendance (CRM)", () => {
     expect(await attendanceOf(reg)).toHaveLength(0);
   });
 
-  it("session of another tenant -> 404, no write", async () => {
+  it("session of another tenant (even one carrying this event's id) -> 404, no write", async () => {
     const reg = await makeRegistration();
-    const res = await request(app)
-      .put(crmPath(reg._id, sessionTenantB._id))
-      .set("Authorization", crm())
-      .send({ status: "absent" });
-    expect(res.status).toBe(404);
+    for (const foreign of [sessionTenantB, sessionTenantBOnEventA]) {
+      const res = await request(app)
+        .put(crmPath(reg._id, foreign._id))
+        .set("Authorization", crm())
+        .send({ status: "absent" });
+      expect(res.status).toBe(404);
+    }
     expect(await attendanceOf(reg)).toHaveLength(0);
   });
 
