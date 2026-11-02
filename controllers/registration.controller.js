@@ -555,6 +555,27 @@ async function createRegistration(req, res, next) {
             "This PaymentIntent has already been used for another registration.",
           );
         }
+        // P5 payer binding (belt and braces; account-service enforces the same on attach):
+        // a PORTAL caller may only use an intent it created, and an intent made for one
+        // event/course can never pay for another.
+        const entityType = registrationType === "course" ? "course" : "event";
+        const entityId = String(registrationType === "course" ? courseId : eventId);
+        if (
+          isPortalCaller &&
+          existingPayment.payer &&
+          String(existingPayment.payer.userId || "") !== String(caller.userId)
+        ) {
+          throw new AppError("Not permitted for this record", 403, "NOT_OWNER");
+        }
+        if (
+          existingPayment.target &&
+          (existingPayment.target.entityType !== entityType ||
+            String(existingPayment.target.entityId) !== entityId)
+        ) {
+          throw AppError.badRequest(
+            "stripePaymentIntentId was not created for this event/course.",
+          );
+        }
         if (
           existingPayment.purpose !== purpose ||
           existingPayment.amount !== amount ||
@@ -564,15 +585,23 @@ async function createRegistration(req, res, next) {
             "stripePaymentIntentId does not match this registration's purpose/amount/currency.",
           );
         }
+        // Atomic single attach at account-service: a concurrent or repeated attach of the
+        // same intent to a different registration is a 409, which lands in the rollback
+        // below (this Registration is deleted, the caller gets the 409).
         const attached = await attachRegistrationToPaymentIntent({
           req,
           tenantId,
           paymentIntentId: stripePaymentIntentId,
           registrationId: String(registration._id),
+          entityType,
+          entityId,
+          purpose,
+          amount,
+          currency,
           productCode,
           eventCategoryCode,
         });
-        registration.paymentId = existingPayment._id || null;
+        registration.paymentId = attached?.paymentId || existingPayment._id || null;
         registration.stripePaymentIntentId = stripePaymentIntentId;
         // requires_capture (authorized) is the expected live state here,
         // mirroring what the requires_capture webhook branch already sets
@@ -581,6 +610,44 @@ async function createRegistration(req, res, next) {
           registration.paymentStatus = "authorized";
         }
         await registration.save();
+        await publishRegistrationCreated(registration, tenantId);
+      } else if (method === "stripe" && isPortalCaller) {
+        // P5 payer binding: a PORTAL caller's intent can't carry a registrationId
+        // (account-service refuses it), so create it for the event/course and then bind
+        // this registration with the same atomic attach the pre-authorized path uses.
+        const purpose = registrationType === "course" ? "courseRegistration" : "eventRegistration";
+        const entityType = registrationType === "course" ? "course" : "event";
+        const entityId = String(registrationType === "course" ? courseId : eventId);
+        const intent = await createRegistrationPaymentIntent({
+          req,
+          tenantId,
+          profileId: candidateProfileId || undefined,
+          membershipNumber: candidateMembershipNumber,
+          amount,
+          currency,
+          productCode,
+          eventCategoryCode,
+          purpose,
+          entityType,
+          entityId,
+        });
+        const attached = await attachRegistrationToPaymentIntent({
+          req,
+          tenantId,
+          paymentIntentId: intent?.paymentIntentId,
+          registrationId: String(registration._id),
+          entityType,
+          entityId,
+          purpose,
+          amount,
+          currency,
+          productCode,
+          eventCategoryCode,
+        });
+        registration.paymentId = attached?.paymentId || intent?.id || null;
+        registration.stripePaymentIntentId = intent?.paymentIntentId || null;
+        await registration.save();
+        paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
         await publishRegistrationCreated(registration, tenantId);
       } else if (method === "stripe") {
         const intent = await createRegistrationPaymentIntent({
@@ -595,7 +662,8 @@ async function createRegistration(req, res, next) {
           eventCategoryCode,
           purpose: registrationType === "course" ? "courseRegistration" : "eventRegistration",
         });
-        registration.paymentId = intent?.paymentId || null;
+        // account-service's createIntent names the Payment id "id" (see retry-payment).
+        registration.paymentId = intent?.id || intent?.paymentId || null;
         registration.stripePaymentIntentId = intent?.paymentIntentId || null;
         await registration.save();
         paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
