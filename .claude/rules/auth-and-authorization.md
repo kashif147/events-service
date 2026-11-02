@@ -48,11 +48,20 @@ The portal self-service routes (`POST /`, `GET /mine`, `GET /:id`, `PUT /:id/can
 caller-class/ownership gate:
 
 - CRM → `events:<action>` (unchanged).
-- PORTAL → `registrations:<action>` (codes `REGISTRATIONS_CREATE/READ/WRITE`). **TRANSITION:**
-  while those codes are not in the catalogue / portal roles, a PDP *permission denial* of
-  `registrations:<action>` falls back to the legacy `events:<action>`. A 401/5xx from the PDP is
-  replayed, never falls back. Remove by flipping `LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK` to
-  `false` (then deleting the branch) once the catalogue + role change ships.
+- PORTAL → `registrations:<action>` (codes `REGISTRATIONS_CREATE/READ/WRITE`), evaluated
+  directly by `evaluatePermission(req, resource, action)` — the same policy client the
+  middleware uses (`evaluateWithHeaders` for gateway headers, `evaluatePolicy` for a Bearer),
+  with the trusted user/tenant only, never body/query. **TRANSITION:** only when the PDP's deny
+  reason says the new permission is *absent* — `UNKNOWN_RESOURCE`,
+  `INSUFFICIENT_RESOURCE_PERMISSION`, `MISSING_PERMISSION`, `PERMISSION_NOT_DEFINED`
+  (`LEGACY_FALLBACK_ABSENT_REASONS`) — is the exact legacy `events:<action>` evaluated. Any
+  other reason (token/tenant failures, `POLICY_SERVICE_ERROR`, evaluation errors/timeouts)
+  fails closed with no fallback. On PERMIT it sets `req.policyContext`/`req.user`/`req.userId`/
+  `req.tenantId` like the middleware. No fallback ever applies to CRM or admin routes.
+  `LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK` is temporary compatibility debt; retire it only
+  when: the catalogue codes exist; canonical MEMBER/NON-MEMBER roles include
+  `registrations:*`; any live-role migration is separately approved; token issuance is proven
+  to carry the new permissions; and the registration regression tests pass without fallback.
 - anything else → 403 `FORBIDDEN_CALLER`.
 
 Actions mirror what each route required before (so the fallback is exactly the old check):

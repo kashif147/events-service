@@ -69,6 +69,13 @@ on its own — every approval is an explicit call (the CRM Add Attendee drawer's
 
 ## Payment methods
 
+Server-side allow-list in `createRegistration` (`PAYMENT_METHODS_BY_CALLER`), checked before
+any lookup or write — CRM approval is not the protection: PORTAL (and mobile, which is not
+distinguishable) → `stripe` only (`manual`/`comp`/`invoice` → 403
+`PAYMENT_METHOD_NOT_ALLOWED`); CRM → `stripe`, `manual`, `comp`, `invoice`; anything else,
+including `global_payments` (no server-side integration yet), → 400
+`PAYMENT_METHOD_NOT_SUPPORTED`.
+
 `manual`/`comp`/`invoice` are *recorded* (a `Payment` doc created, `deferPosting: true`) via
 `postManualRegistrationPayment` — not posted to the GL until approval
 (`postManualRegistrationPaymentToGL`).

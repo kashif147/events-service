@@ -4,38 +4,20 @@
  * legacy events:<action> fallback); createRegistration identity and tier
  * eligibility are derived from the verified caller.
  *
- * PDP is mocked. By default it permits. Headers:
- *   x-test-pdp: deny                     -> deny every permission
- *   x-test-pdp-deny: res:action,...      -> deny just those (or "registrations:*" / "events:*")
+ * PDP is mocked (tests/helpers/pdpMock.js). CRM/staff routes: the policy
+ * middleware mock, driven by x-test-pdp / x-test-pdp-deny headers. PORTAL
+ * registration routes: the direct policy-client evaluation, driven by the
+ * test token's pdpDeny / pdpReason / pdpError claims. AUTH_BYPASS_ENABLED is
+ * switched off here so evaluatePermission really consults the (mocked)
+ * policy client instead of the local bypass.
  */
+process.env.AUTH_BYPASS_ENABLED = "false";
+
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 const request = require("supertest");
 
-jest.mock("../middlewares/policy.middleware.js", () => {
-  const calls = [];
-  const isDenied = (req, resource, action) => {
-    if (req.headers["x-test-pdp"] === "deny") return true;
-    const list = String(req.headers["x-test-pdp-deny"] || "")
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean);
-    return list.includes(`${resource}:${action}`) || list.includes(`${resource}:*`);
-  };
-  const defaultPolicyMiddleware = {
-    calls,
-    requirePermission: (resource, action) => (req, res, next) => {
-      calls.push(`${resource}:${action}`);
-      if (isDenied(req, resource, action)) {
-        return res
-          .status(403)
-          .json({ success: false, error: "Permission denied", code: "PERMISSION_DENIED", status: 403 });
-      }
-      return next();
-    },
-  };
-  return Object.assign(defaultPolicyMiddleware, { defaultPolicyMiddleware });
-});
+jest.mock("../middlewares/policy.middleware.js", () => require("./helpers/pdpMock.js").createPdpMock());
 jest.mock("../services/accountService.client.js");
 jest.mock("../services/profileLookup.client.js");
 jest.mock("../services/subscriptionLookup.client.js");
@@ -44,7 +26,10 @@ jest.mock("../services/certificateIssuance.service.js");
 jest.mock("../rabbitMQ/publishers/registration.events.publisher.js");
 
 const { defaultPolicyMiddleware } = require("../middlewares/policy.middleware.js");
-const { postManualRegistrationPayment } = require("../services/accountService.client.js");
+const {
+  postManualRegistrationPayment,
+  createRegistrationPaymentIntent,
+} = require("../services/accountService.client.js");
 const {
   getCallerOwnProfile,
   checkAttendeeDuplicates,
@@ -60,7 +45,11 @@ const EventSession = require("../models/eventSession.model.js");
 const Course = require("../models/course.model.js");
 const Registration = require("../models/registration.model.js");
 const Template = require("../models/template.model.js");
-const { requireRegistrationPermission } = require("../middlewares/registrationPermission.mw.js");
+const {
+  requireRegistrationPermission,
+  evaluatePermission,
+  LEGACY_FALLBACK_ABSENT_REASONS,
+} = require("../middlewares/registrationPermission.mw.js");
 
 const TENANT = "tenant-p5b2-a";
 const OTHER_TENANT = "tenant-p5b2-c";
@@ -69,12 +58,15 @@ const USER_B = "p5b2-portal-b";
 const USER_C = "p5b2-portal-c";
 const CRM_USER = "64b000000000000000000c01"; // Template.userId is an ObjectId
 
-function bearer({ sub, tenantId = TENANT, userType }) {
+function bearer({ sub, tenantId = TENANT, userType, pdpDeny, pdpReason, pdpError }) {
   const claims = { sub, tenantId, roles: [] };
   if (userType !== undefined) claims.userType = userType;
+  if (pdpDeny) claims.pdpDeny = pdpDeny;
+  if (pdpReason) claims.pdpReason = pdpReason;
+  if (pdpError) claims.pdpError = true;
   return `Bearer ${jwt.sign(claims, process.env.JWT_SECRET)}`;
 }
-const portalA = () => bearer({ sub: USER_A, userType: "PORTAL" });
+const portalA = (pdp = {}) => bearer({ sub: USER_A, userType: "PORTAL", ...pdp });
 const portalC = () => bearer({ sub: USER_C, tenantId: OTHER_TENANT, userType: "PORTAL" });
 const crm = () => bearer({ sub: CRM_USER, userType: "CRM" });
 const noType = () => bearer({ sub: USER_A });
@@ -152,6 +144,11 @@ beforeEach(async () => {
   checkAttendeeDuplicates.mockResolvedValue({ resolution: "none" });
   getProfileMembershipNumber.mockResolvedValue(null);
   postManualRegistrationPayment.mockResolvedValue({ paymentId: "payment-manual-1" });
+  createRegistrationPaymentIntent.mockResolvedValue({
+    paymentId: "payment-stripe-1",
+    paymentIntentId: "pi_test_1",
+    clientSecret: "pi_test_1_secret",
+  });
   createCertificateForRegistration.mockResolvedValue({ id: "cert-1" });
 });
 
@@ -370,91 +367,119 @@ const selfRoutes = [
   },
 ];
 
+async function expectRegUntouched(reg) {
+  const fresh = await Registration.findById(reg._id).lean();
+  expect(fresh.status).toBe("pending");
+  expect(fresh.isActive).toBe(true);
+  expect(fresh.sessionAttendance).toHaveLength(0);
+}
+
 describe.each(selfRoutes)("self-service $name", (route) => {
   const newPerm = `registrations:${route.action}`;
   const legacyPerm = `events:${route.action}`;
 
-  it("PORTAL owner with registrations:<action> (legacy denied) -> 200, new permission evaluated first", async () => {
-    const res = await send(route.method, route.path(regA), portalA(), { headers: { "x-test-pdp-deny": legacyPerm } });
+  it("PORTAL owner with registrations:<action> (legacy denied) -> 200, only the new permission evaluated", async () => {
+    const res = await send(route.method, route.path(regA), portalA({ pdpDeny: [legacyPerm] }));
     expect(res.status).toBe(200);
     expect(defaultPolicyMiddleware.calls).toEqual([newPerm]);
   });
 
-  it("PORTAL owner with only the legacy events:<action> (transition fallback) -> 200", async () => {
-    const res = await send(route.method, route.path(regA), portalA(), { headers: { "x-test-pdp-deny": newPerm } });
-    expect(res.status).toBe(200);
-    expect(defaultPolicyMiddleware.calls).toEqual([newPerm, legacyPerm]);
+  it.each(["UNKNOWN_RESOURCE", "INSUFFICIENT_RESOURCE_PERMISSION", "MISSING_PERMISSION", "PERMISSION_NOT_DEFINED"])(
+    "PORTAL owner, new permission absent (%s), legacy events:<action> held -> 200 via transition fallback",
+    async (reason) => {
+      const res = await send(route.method, route.path(regA), portalA({ pdpDeny: [newPerm], pdpReason: reason }));
+      expect(res.status).toBe(200);
+      expect(defaultPolicyMiddleware.calls).toEqual([newPerm, legacyPerm]);
+    },
+  );
+
+  it.each(["TENANT_SCOPE_VIOLATION", "INVALID_TOKEN", "EVALUATION_ERROR", "RETIRED_ROLE_REAUTH_REQUIRED", "INVALID_USER_TYPE"])(
+    "PORTAL owner, new permission denied for a non-absence reason (%s) -> 403, NO fallback, untouched",
+    async (reason) => {
+      const res = await send(route.method, route.path(regA), portalA({ pdpDeny: [newPerm], pdpReason: reason }));
+      expect(res.status).toBe(403);
+      expect(res.body.reason).toBe(reason);
+      expect(defaultPolicyMiddleware.calls).toEqual([newPerm]);
+      await expectRegUntouched(regA);
+    },
+  );
+
+  it("PDP outage (POLICY_SERVICE_ERROR) -> fails closed, NO fallback, untouched", async () => {
+    const res = await send(route.method, route.path(regA), portalA({ pdpError: true }));
+    expect(res.status).toBe(403);
+    expect(res.body.reason).toBe("POLICY_SERVICE_ERROR");
+    expect(defaultPolicyMiddleware.calls).toEqual([newPerm]);
+    await expectRegUntouched(regA);
   });
 
-  it("PORTAL owner with neither -> 403 PERMISSION_DENIED, untouched", async () => {
-    const res = await send(route.method, route.path(regA), portalA(), {
-      headers: { "x-test-pdp-deny": `${newPerm},${legacyPerm}` },
-    });
+  it("PORTAL owner with neither permission -> 403 PERMISSION_DENIED, untouched", async () => {
+    const res = await send(route.method, route.path(regA), portalA({ pdpDeny: [newPerm, legacyPerm] }));
     expect(res.status).toBe(403);
     expect(res.body.code).toBe("PERMISSION_DENIED");
-    const fresh = await Registration.findById(regA._id).lean();
-    expect(fresh.status).toBe("pending");
-    expect(fresh.sessionAttendance).toHaveLength(0);
+    expect(defaultPolicyMiddleware.calls).toEqual([newPerm, legacyPerm]);
+    await expectRegUntouched(regA);
+  });
+
+  it("the fallback evaluates the EXACT legacy action, never another one", async () => {
+    const other = route.action === "read" ? "write" : "read";
+    const res = await send(route.method, route.path(regA), portalA({ pdpDeny: [newPerm, legacyPerm] }));
+    expect(res.status).toBe(403);
+    expect(defaultPolicyMiddleware.calls).not.toContain(`events:${other}`);
   });
 
   it("PORTAL A (holding both permissions) on B, same tenant -> denied, untouched", async () => {
     const res = await send(route.method, route.path(regB), portalA());
     expect(res.status).toBe(route.otherStatus || 403);
     if (!route.otherStatus) expect(res.body.code).toBe("NOT_OWNER");
-    const fresh = await Registration.findById(regB._id).lean();
-    expect(fresh.status).toBe("pending");
-    expect(fresh.sessionAttendance).toHaveLength(0);
+    await expectRegUntouched(regB);
   });
 
   it("PORTAL A (holding both permissions) on C, other tenant -> denied, untouched", async () => {
     const res = await send(route.method, route.path(regC), portalA());
     expect(res.status).toBe(route.otherStatus || 403);
-    const fresh = await Registration.findById(regC._id).lean();
-    expect(fresh.status).toBe("pending");
-    expect(fresh.sessionAttendance).toHaveLength(0);
+    await expectRegUntouched(regC);
   });
 
-  it("CRM: events:<action> is the permission checked (registrations:* is irrelevant)", async () => {
-    const res = await send(route.method, route.path(regB), crm(), { headers: { "x-test-pdp-deny": newPerm } });
+  it("CRM: events:<action> via the policy middleware only - registrations:* never evaluated, no fallback", async () => {
+    const res = await send(route.method, route.path(regB), crm());
     expect(defaultPolicyMiddleware.calls).toEqual([legacyPerm]);
     expect([401, 403]).not.toContain(res.status);
   });
 
-  it("CRM without events:<action> -> 403 even if registrations:<action> would be permitted", async () => {
+  it("CRM without events:<action> -> 403 (no fallback for CRM)", async () => {
     const res = await send(route.method, route.path(regB), crm(), { headers: { "x-test-pdp-deny": legacyPerm } });
     expect(res.status).toBe(403);
     expect(res.body.code).toBe("PERMISSION_DENIED");
+    expect(defaultPolicyMiddleware.calls).toEqual([legacyPerm]);
+    await expectRegUntouched(regB);
   });
 
-  it("unknown / missing userType -> 403", async () => {
+  it("unknown / missing userType -> 403, PDP never consulted", async () => {
     for (const auth of [unknownType(), noType()]) {
       const res = await send(route.method, route.path(regA), auth);
       expect(res.status).toBe(403);
     }
-    expect((await Registration.findById(regA._id).lean()).status).toBe("pending");
+    expect(defaultPolicyMiddleware.calls).toEqual([]);
+    await expectRegUntouched(regA);
   });
 });
 
 describe("GET /registrations/mine", () => {
   it("PORTAL with registrations:read only -> own registrations only", async () => {
-    const res = await send("get", "/api/registrations/mine", portalA(), { headers: { "x-test-pdp-deny": "events:read" } });
+    const res = await send("get", "/api/registrations/mine", portalA({ pdpDeny: ["events:read"] }));
     expect(res.status).toBe(200);
     expect(res.body.data.map((r) => String(r._id))).toEqual([String(regA._id)]);
     expect(defaultPolicyMiddleware.calls).toEqual(["registrations:read"]);
   });
 
-  it("PORTAL with only legacy events:read -> 200 via fallback", async () => {
-    const res = await send("get", "/api/registrations/mine", portalA(), {
-      headers: { "x-test-pdp-deny": "registrations:read" },
-    });
+  it("PORTAL with only legacy events:read (new absent) -> 200 via fallback", async () => {
+    const res = await send("get", "/api/registrations/mine", portalA({ pdpDeny: ["registrations:read"] }));
     expect(res.status).toBe(200);
     expect(defaultPolicyMiddleware.calls).toEqual(["registrations:read", "events:read"]);
   });
 
   it("PORTAL with neither -> 403", async () => {
-    const res = await send("get", "/api/registrations/mine", portalA(), {
-      headers: { "x-test-pdp-deny": "registrations:read,events:read" },
-    });
+    const res = await send("get", "/api/registrations/mine", portalA({ pdpDeny: ["registrations:read", "events:read"] }));
     expect(res.status).toBe(403);
   });
 
@@ -472,7 +497,7 @@ describe("GET /registrations/mine", () => {
   });
 });
 
-describe("requireRegistrationPermission (unit)", () => {
+describe("requireRegistrationPermission / evaluatePermission (unit)", () => {
   function run(mw, req) {
     return new Promise((resolve) => {
       const res = {
@@ -489,36 +514,66 @@ describe("requireRegistrationPermission (unit)", () => {
       mw(req, res, () => resolve({ status: "next" }));
     });
   }
-  const portalReq = (deny) => ({ user: { userType: "PORTAL" }, headers: { "x-test-pdp-deny": deny } });
+  const portalReq = (pdp) => ({ user: { userType: "PORTAL" }, headers: { authorization: portalA(pdp) } });
 
-  it("with the legacy fallback switched off, PORTAL needs registrations:<action>", async () => {
-    const mw = requireRegistrationPermission("read", "read", { legacyFallback: false });
-    expect(await run(mw, portalReq("registrations:read"))).toEqual(
-      expect.objectContaining({ status: 403 }),
-    );
-    expect(await run(mw, portalReq("events:read"))).toEqual({ status: "next" });
+  it("fallback switched off: PORTAL needs registrations:<action> (the 'pass without fallback' retirement check)", async () => {
+    const mw = requireRegistrationPermission("read", { legacyFallback: false });
+    expect(await run(mw, portalReq({ pdpDeny: ["registrations:read"] }))).toEqual(expect.objectContaining({ status: 403 }));
+    expect(await run(mw, portalReq({ pdpDeny: ["events:read"] }))).toEqual({ status: "next" });
   });
 
-  it("a non-permission failure (e.g. PDP 500/401) is replayed, never falls back", async () => {
-    const original = defaultPolicyMiddleware.requirePermission;
-    defaultPolicyMiddleware.requirePermission = (resource) => (req, res, next) =>
-      resource === "registrations"
-        ? res.status(500).json({ success: false, code: "POLICY_SERVICE_ERROR" })
-        : next();
-    try {
-      const mw = requireRegistrationPermission("read");
-      const out = await run(mw, portalReq(""));
-      expect(out).toEqual({ status: 500, body: { success: false, code: "POLICY_SERVICE_ERROR" } });
-    } finally {
-      defaultPolicyMiddleware.requirePermission = original;
-    }
+  it("an evaluation that throws fails closed (500), no fallback", async () => {
+    const evaluate = jest.fn().mockRejectedValue(new Error("boom"));
+    const mw = requireRegistrationPermission("read", { evaluate });
+    const out = await run(mw, portalReq());
+    expect(out.status).toBe(500);
+    expect(out.body.code).toBe("POLICY_SERVICE_ERROR");
+    expect(evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it("on PERMIT sets req.user/req.userId/req.tenantId like the policy middleware", async () => {
+    const mw = requireRegistrationPermission("read");
+    const req = portalReq();
+    expect(await run(mw, req)).toEqual({ status: "next" });
+    expect(req.userId).toBe(USER_A);
+    expect(req.tenantId).toBe(TENANT);
+    expect(req.user.userType).toBe("PORTAL");
+    expect(req.policyContext.decision).toBe("PERMIT");
   });
 
   it("unknown caller type -> 403 FORBIDDEN_CALLER without consulting the PDP", async () => {
-    const mw = requireRegistrationPermission("create");
+    const evaluate = jest.fn();
+    const mw = requireRegistrationPermission("create", { evaluate });
     const out = await run(mw, { user: { userType: "SERVICE" }, headers: {} });
     expect(out.status).toBe(403);
     expect(out.body.code).toBe("FORBIDDEN_CALLER");
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
+  it("evaluatePermission never sends body/query values as context", async () => {
+    const spy = jest.spyOn(defaultPolicyMiddleware.policyClient, "evaluatePolicy");
+    await evaluatePermission(
+      { headers: { authorization: portalA() }, body: { tenantId: "evil", userId: "evil" }, query: { tenantId: "evil" } },
+      "registrations",
+      "read",
+    );
+    const context = spy.mock.calls[0][3];
+    expect(JSON.stringify(context)).not.toContain("evil");
+    spy.mockRestore();
+  });
+
+  it("evaluatePermission with no credentials -> DENY 401, PDP not called", async () => {
+    const spy = jest.spyOn(defaultPolicyMiddleware.policyClient, "evaluatePolicy");
+    const out = await evaluatePermission({ headers: {} }, "registrations", "read");
+    expect(out).toEqual(expect.objectContaining({ decision: "DENY", status: 401 }));
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("documents exactly which PDP reasons count as 'absent'", () => {
+    expect([...LEGACY_FALLBACK_ABSENT_REASONS].sort()).toEqual(
+      ["INSUFFICIENT_RESOURCE_PERMISSION", "MISSING_PERMISSION", "PERMISSION_NOT_DEFINED", "UNKNOWN_RESOURCE"],
+    );
   });
 });
 
@@ -530,7 +585,7 @@ function createBody(overrides = {}) {
   return {
     registrationType: "event",
     eventId: String(event._id),
-    paymentMethod: "manual",
+    paymentMethod: "stripe",
     registeredVia: "portal",
     profile: { email: `p5b2-create-${counter}@example.test`, firstName: "Ann", lastName: "A" },
     ...overrides,
@@ -557,7 +612,7 @@ describe("POST /registrations - PORTAL identity is the verified caller", () => {
     expect(getActiveMembership).toHaveBeenCalledWith(expect.objectContaining({ profileId: "profile-a" }));
     expect(getActiveMembership).not.toHaveBeenCalledWith(expect.objectContaining({ profileId: "profile-b" }));
     expect(getProfileMembershipNumber).not.toHaveBeenCalled();
-    expect(postManualRegistrationPayment.mock.calls[0][0]).toEqual(
+    expect(createRegistrationPaymentIntent.mock.calls[0][0]).toEqual(
       expect.objectContaining({ profileId: "profile-a", membershipNumber: "M-A" }),
     );
   });
@@ -593,7 +648,7 @@ describe("POST /registrations - PORTAL identity is the verified caller", () => {
     expect(res.status).toBe(503);
     expect(res.body.error.code || res.body.code).toBe("PROFILE_LOOKUP_FAILED");
     expect(await Registration.countDocuments({ tenantId: TENANT, submittedByUserId: USER_A })).toBe(1); // only regA
-    expect(postManualRegistrationPayment).not.toHaveBeenCalled();
+    expect(createRegistrationPaymentIntent).not.toHaveBeenCalled();
   });
 
   it("CRM may still target another profile (existing behaviour); registeredVia/registeredBy from the verified caller", async () => {
@@ -615,20 +670,17 @@ describe("POST /registrations - PORTAL identity is the verified caller", () => {
   });
 
   it("permissions: PORTAL registrations:create -> 201; legacy events:create only -> 201; neither -> 403", async () => {
-    let res = await send("post", "/api/registrations", portalA(), {
+    let res = await send("post", "/api/registrations", portalA({ pdpDeny: ["events:create"] }), { body: createBody() });
+    expect(res.status).toBe(201);
+    res = await send("post", "/api/registrations", portalA({ pdpDeny: ["registrations:create"] }), {
       body: createBody(),
-      headers: { "x-test-pdp-deny": "events:create" },
     });
     expect(res.status).toBe(201);
-    res = await send("post", "/api/registrations", portalA(), {
+    res = await send("post", "/api/registrations", portalA({ pdpDeny: ["registrations:create", "events:create"] }), {
       body: createBody(),
-      headers: { "x-test-pdp-deny": "registrations:create" },
     });
-    expect(res.status).toBe(201);
-    res = await send("post", "/api/registrations", portalA(), {
-      body: createBody(),
-      headers: { "x-test-pdp-deny": "registrations:create,events:create" },
-    });
+    expect(res.status).toBe(403);
+    res = await send("post", "/api/registrations", portalA({ pdpError: true }), { body: createBody() });
     expect(res.status).toBe(403);
   });
 
@@ -642,7 +694,7 @@ describe("POST /registrations - PORTAL identity is the verified caller", () => {
       res = await send("post", "/api/registrations", auth, { body: createBody() });
       expect(res.status).toBe(403);
     }
-    expect(postManualRegistrationPayment).not.toHaveBeenCalled();
+    expect(createRegistrationPaymentIntent).not.toHaveBeenCalled();
   });
 });
 
@@ -653,7 +705,7 @@ describe("POST /registrations - PORTAL tier eligibility is server-checked", () =
     });
     expect(res.status).toBe(400);
     expect(res.body.error.code || res.body.code).toBe("TIER_NOT_ELIGIBLE");
-    expect(postManualRegistrationPayment).not.toHaveBeenCalled();
+    expect(createRegistrationPaymentIntent).not.toHaveBeenCalled();
   });
 
   it("verified active member (own profile) choosing MEMBER -> 201 at the server's member price", async () => {
@@ -680,5 +732,64 @@ describe("POST /registrations - PORTAL tier eligibility is server-checked", () =
     });
     expect(res.status).toBe(201);
     expect(res.body.data.registration.amount).toBe(5000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Payment-method allow-list (server-side, per verified caller class).
+// ---------------------------------------------------------------------------
+describe("POST /registrations - payment-method allow-list", () => {
+  async function expectNothingCreated() {
+    expect(await Registration.countDocuments({ tenantId: TENANT })).toBe(2); // regA + regB only
+    expect(postManualRegistrationPayment).not.toHaveBeenCalled();
+    expect(createRegistrationPaymentIntent).not.toHaveBeenCalled();
+    expect(getCallerOwnProfile).not.toHaveBeenCalled();
+  }
+
+  it.each(["manual", "comp", "invoice"])("PORTAL paymentMethod %s -> 403 PAYMENT_METHOD_NOT_ALLOWED, nothing created", async (m) => {
+    const res = await send("post", "/api/registrations", portalA(), { body: createBody({ paymentMethod: m }) });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("PAYMENT_METHOD_NOT_ALLOWED");
+    await expectNothingCreated();
+  });
+
+  it.each([portalA, crm])("global_payments -> 400 PAYMENT_METHOD_NOT_SUPPORTED for every caller (%#), not a 500", async (auth) => {
+    const res = await send("post", "/api/registrations", auth(), {
+      body: createBody({ paymentMethod: "global_payments", globalPaymentsTransactionId: "gp_1" }),
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("PAYMENT_METHOD_NOT_SUPPORTED");
+    await expectNothingCreated();
+  });
+
+  it("an unknown method -> 400 PAYMENT_METHOD_NOT_SUPPORTED", async () => {
+    const res = await send("post", "/api/registrations", crm(), { body: createBody({ paymentMethod: "cash" }) });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("PAYMENT_METHOD_NOT_SUPPORTED");
+    await expectNothingCreated();
+  });
+
+  it("PORTAL stripe (explicit or defaulted) -> 201", async () => {
+    let res = await send("post", "/api/registrations", portalA(), { body: createBody({ paymentMethod: "stripe" }) });
+    expect(res.status).toBe(201);
+    const body = createBody();
+    delete body.paymentMethod;
+    res = await send("post", "/api/registrations", portalA(), { body });
+    expect(res.status).toBe(201);
+    expect(res.body.data.registration.paymentMethod).toBe("stripe");
+  });
+
+  it.each(["stripe", "manual", "comp", "invoice"])("CRM paymentMethod %s -> 201", async (m) => {
+    const res = await send("post", "/api/registrations", crm(), { body: createBody({ paymentMethod: m }) });
+    expect(res.status).toBe(201);
+    expect(res.body.data.registration.paymentMethod).toBe(m);
+  });
+
+  it("unknown / missing caller type -> 403 before any payment-method handling", async () => {
+    for (const auth of [unknownType(), noType()]) {
+      const res = await send("post", "/api/registrations", auth, { body: createBody({ paymentMethod: "comp" }) });
+      expect(res.status).toBe(403);
+    }
+    await expectNothingCreated();
   });
 });

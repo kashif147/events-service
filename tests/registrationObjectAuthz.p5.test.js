@@ -5,27 +5,19 @@
  * (denied), A on C other tenant (denied), CRM + permission (allowed,
  * tenant-scoped), CRM without permission (denied), portal holding the
  * permission string but not owner / not CRM (denied), portal approve/reject
- * always denied. The PDP is mocked: it permits unless the test sends
- * x-test-pdp: deny (simulating a CRM user without events:*).
+ * always denied. The PDP is mocked (tests/helpers/pdpMock.js): it permits
+ * unless the test sends x-test-pdp: deny (CRM policy-middleware path) or a
+ * PORTAL token carries pdpDeny (direct evaluation path used by
+ * requireRegistrationPermission). AUTH_BYPASS_ENABLED is off here so that
+ * direct evaluation consults the mock.
  */
+process.env.AUTH_BYPASS_ENABLED = "false";
+
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 const request = require("supertest");
 
-jest.mock("../middlewares/policy.middleware.js", () => {
-  const calls = [];
-  const defaultPolicyMiddleware = {
-    calls,
-    requirePermission: (resource, action) => (req, res, next) => {
-      calls.push(`${resource}:${action}`);
-      if (req.headers["x-test-pdp"] === "deny") {
-        return res.status(403).json({ success: false, error: "Permission denied", code: "PERMISSION_DENIED", status: 403 });
-      }
-      return next();
-    },
-  };
-  return Object.assign(defaultPolicyMiddleware, { defaultPolicyMiddleware });
-});
+jest.mock("../middlewares/policy.middleware.js", () => require("./helpers/pdpMock.js").createPdpMock());
 jest.mock("../services/accountService.client.js");
 jest.mock("../services/profileLookup.client.js");
 jest.mock("../services/lookup.client.js");
@@ -51,9 +43,10 @@ const USER_B = "portal-user-b";
 const USER_C = "portal-user-c";
 const CRM_USER = "crm-user-1";
 
-function bearer({ sub, tenantId = TENANT, userType }) {
+function bearer({ sub, tenantId = TENANT, userType, pdpDeny }) {
   const claims = { sub, tenantId, roles: [] };
   if (userType !== undefined) claims.userType = userType;
+  if (pdpDeny) claims.pdpDeny = pdpDeny;
   return `Bearer ${jwt.sign(claims, process.env.JWT_SECRET)}`;
 }
 const portalA = () => bearer({ sub: USER_A, userType: "PORTAL" });
@@ -342,7 +335,7 @@ describe.each(dualRoutes)("dual $name", (route) => {
   });
 
   it("PORTAL owner without the PDP permission -> 403", async () => {
-    const res = await send(portalA(), regA._id, undefined, { "x-test-pdp": "deny" });
+    const res = await send(bearer({ sub: USER_A, userType: "PORTAL", pdpDeny: ["*"] }), regA._id);
     expect(res.status).toBe(403);
     await expectUntouched(regA);
   });

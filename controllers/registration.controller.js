@@ -84,6 +84,40 @@ function legacyPriceCategoryForTierKey(tierKey) {
 }
 
 /**
+ * Server-side payment-method allow-list per VERIFIED caller class. CRM
+ * approval is not relied on as the protection: a PORTAL (or mobile - not
+ * distinguishable, see registeredVia) caller can only pay by card; staff may
+ * also record manual / comp / invoice. global_payments has no server-side
+ * integration (no verification of globalPaymentsTransactionId, not in the
+ * Registration enum), so it is rejected for everyone until it has one.
+ */
+const PAYMENT_METHODS_BY_CALLER = Object.freeze({
+  PORTAL: Object.freeze(["stripe"]),
+  CRM: Object.freeze(["stripe", "manual", "comp", "invoice"]),
+});
+const KNOWN_PAYMENT_METHODS = new Set(["stripe", "manual", "comp", "invoice"]);
+
+/** Returns an AppError when the caller may not use this method, else null. */
+function paymentMethodRejection(callerType, method) {
+  if (typeof method !== "string" || !KNOWN_PAYMENT_METHODS.has(method)) {
+    return new AppError(
+      `Payment method '${String(method)}' is not supported`,
+      400,
+      "PAYMENT_METHOD_NOT_SUPPORTED",
+    );
+  }
+  const allowed = PAYMENT_METHODS_BY_CALLER[callerType] || [];
+  if (!allowed.includes(method)) {
+    return new AppError(
+      `Payment method '${method}' is not available for this caller`,
+      403,
+      "PAYMENT_METHOD_NOT_ALLOWED",
+    );
+  }
+  return null;
+}
+
+/**
  * PORTAL lineItems: the tier is chosen client-side, so its eligibility is
  * checked server-side against the caller's VERIFIED membership (same rules
  * the portal's own tier picker applies): member tiers need an active
@@ -197,6 +231,11 @@ async function createRegistration(req, res, next) {
     const isPortalCaller = caller.userType === PORTAL;
     const registeredVia = isPortalCaller ? "portal" : "crm";
     const registeredByUserId = isPortalCaller ? null : caller.userId;
+
+    // Payment method allow-list (before any lookup, pricing or write).
+    const method = paymentMethod === undefined || paymentMethod === null ? "stripe" : paymentMethod;
+    const methodError = paymentMethodRejection(caller.userType, method);
+    if (methodError) return next(methodError);
 
     // Multi-tier CRM flow: several {tierKey, quantity} lines summed into one
     // registration/payment. No lineItems (portal/mobile, or CRM with a
@@ -437,7 +476,6 @@ async function createRegistration(req, res, next) {
         eventCategoryCode = resolved.eventCategoryCode;
       }
 
-      const method = paymentMethod || "stripe";
       // Every registration starts pending_review now, regardless of payment
       // method - Profile creation/linking and payment capture/GL-posting
       // both happen only at CRM approval (see the /approve endpoint), never
