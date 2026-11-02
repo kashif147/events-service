@@ -64,6 +64,26 @@ function requireCrmOrPortalOwner(req, res, next) {
 }
 
 /**
+ * Self-scoped routes (GET /mine, POST .../attendance/self, POST / create):
+ * CRM or PORTAL with a non-empty verified user id. The controller scopes by
+ * that id (submittedByUserId) - an empty id must never reach the query,
+ * since submittedByUserId defaults to null on CRM-created rows.
+ */
+function requireIdentifiedCrmOrPortal(req, res, next) {
+  const userType = getVerifiedUserType(req);
+  if (userType !== CRM && userType !== PORTAL) {
+    return deny(res, "FORBIDDEN_CALLER", "Caller type is not permitted for this operation");
+  }
+  const userId = getVerifiedUserId(req);
+  if (!userId) return denyNotOwner(res);
+  // Captured BEFORE the PDP runs: on PERMIT the policy middleware replaces
+  // req.user with the PDP's user object, so controllers read the caller
+  // class/id from here rather than from req.user afterwards.
+  req.verifiedCaller = { userType, userId };
+  return next();
+}
+
+/**
  * Builds the registration query for a route guarded by
  * requireCrmOrPortalOwner. Adds the ownership binding for PORTAL callers.
  */
@@ -88,7 +108,12 @@ function denyNotOwner(res) {
 }
 
 module.exports = {
+  CRM,
+  PORTAL,
+  getVerifiedUserType,
+  getVerifiedUserId,
   requireCrmUser,
+  requireIdentifiedCrmOrPortal,
   requireCrmOrPortalOwner,
   ownerScopedRegistrationQuery,
   isPortalOwnerScoped,

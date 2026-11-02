@@ -3,6 +3,17 @@
 Read `controllers/registration.controller.js` first; `createRegistration` is the shape
 everything else follows:
 
+0. derive identity from the **verified caller** (`req.verifiedCaller`, see
+   auth-and-authorization.md), never the body: `registeredVia` = `"portal"` for PORTAL /
+   `"crm"` for CRM (no verified signal distinguishes the mobile app, so body `registeredVia`,
+   including `"mobile"`, is ignored); `registeredByUserId` = the verified CRM user id / `null`
+   for PORTAL. For PORTAL, `profile.profileId` / membership number in the body are **ignored**:
+   the attendee is the caller's own profile, from profile-service `GET /api/profile/my-profile`
+   (`profileLookup.client.js`'s `getCallerOwnProfile`, forwarding the caller's identity headers,
+   **no** `x-internal-request`). Lookup failure → 503 `PROFILE_LOOKUP_FAILED` (fail closed). No
+   own profile → the duplicate check still runs, but an `exact` match on portal-supplied details
+   is recorded as `POTENTIAL_MATCH` (reviewer must decide) and never drives pricing or
+   `membershipNumber`. CRM may still target any profile in its tenant (`profile.profileId`).
 1. validate
 2. check seat capacity (event- and session-level)
 3. record a duplicate-detection verdict (`duplicateReview`) via
@@ -46,11 +57,15 @@ on its own — every approval is an explicit call (the CRM Add Attendee drawer's
   `services/membershipCategory.util.js`), then `resolveAmount()` prices it against the
   event's/session's `memberPrice`/`nonMemberPrice`/`pricingTiers` (early-bird tiers are
   cutoff-date gated).
-- **Multi-tier `lineItems`** (CRM only, events only) — the operator explicitly picks
+- **Multi-tier `lineItems`** (CRM, and also sent by the portal; events only) — the operator explicitly picks
   tier+quantity pairs (e.g. 2 Member + 1 Non-member) summed into one `amount`/
   `priceBreakdown` via `resolveLineItemsAmount()`/`resolvePriceForTierKey()`, so
   account-service still sees exactly one registration → one payment. `priceCategory`
-  becomes `"mixed"` once more than one tier is used.
+  becomes `"mixed"` once more than one tier is used. For **PORTAL** callers the chosen tier's
+  eligibility is checked against the verified membership (`portalTierIneligibility`):
+  `MEMBER`/`EARLY_BIRD_MEMBER` need an active membership; `STUDENT` is open to non-members and
+  undergraduate-student members only; otherwise 400 `TIER_NOT_ELIGIBLE`. No amount/price is ever
+  read from the body — every amount comes from the event/session/course config.
 
 ## Payment methods
 

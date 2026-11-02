@@ -3,7 +3,12 @@ const router = express.Router();
 const registrationController = require("../controllers/registration.controller.js");
 const checkinController = require("../controllers/checkin.controller.js");
 const { defaultPolicyMiddleware } = require("../middlewares/policy.middleware.js");
-const { requireCrmUser, requireCrmOrPortalOwner } = require("../middlewares/callerClass.mw.js");
+const {
+  requireCrmUser,
+  requireCrmOrPortalOwner,
+  requireIdentifiedCrmOrPortal,
+} = require("../middlewares/callerClass.mw.js");
+const { requireRegistrationPermission } = require("../middlewares/registrationPermission.mw.js");
 
 // Authorization layers (P5 portal object authorization):
 //   1. caller class from the VERIFIED identity (middlewares/callerClass.mw.js):
@@ -12,10 +17,16 @@ const { requireCrmUser, requireCrmOrPortalOwner } = require("../middlewares/call
 //      - requireCrmOrPortalOwner: CRM tenant-wide, or a PORTAL caller on a
 //        registration they submitted (submittedByUserId == verified user id,
 //        same binding as /mine) - anything else 403 NOT_OWNER.
-//   2. the existing PDP permission (events:read/create/write), unchanged.
-// PORTAL roles still hold events:read/create (self-service create, /mine,
-// attendance/self) - holding the permission string alone no longer reaches
-// any other registration or any staff operation.
+//      - requireIdentifiedCrmOrPortal: self-scoped routes (create, /mine,
+//        attendance/self) - CRM or PORTAL with a verified user id.
+//   2. the PDP permission:
+//      - staff-only routes: events:read/create/write, unchanged.
+//      - portal self-service routes: requireRegistrationPermission(action) -
+//        CRM keeps events:<action>; PORTAL needs registrations:<action>
+//        (TRANSITION: falls back to the legacy events:<action> - see
+//        middlewares/registrationPermission.mw.js).
+// Holding a permission string alone never reaches another member's
+// registration or any staff operation.
 router.get(
   "/",
   requireCrmUser,
@@ -33,18 +44,23 @@ router.get(
 // Self-scoped by construction (submittedByUserId = verified user id).
 router.get(
   "/mine",
-  defaultPolicyMiddleware.requirePermission("events", "read"),
+  requireIdentifiedCrmOrPortal,
+  requireRegistrationPermission("read"),
   registrationController.getMyRegistrations,
 );
 router.get(
   "/:id",
   requireCrmOrPortalOwner,
-  defaultPolicyMiddleware.requirePermission("events", "read"),
+  requireRegistrationPermission("read"),
   registrationController.getRegistrationById,
 );
+// PORTAL: identity (profile, registeredVia) is derived from the verified
+// caller inside the controller - never from the body. CRM may target any
+// profile in its tenant (existing behaviour).
 router.post(
   "/",
-  defaultPolicyMiddleware.requirePermission("events", "create"),
+  requireIdentifiedCrmOrPortal,
+  requireRegistrationPermission("create"),
   registrationController.createRegistration,
 );
 // Returns other profiles' candidate matches (membership numbers, emails) -
@@ -64,7 +80,7 @@ router.put(
 router.put(
   "/:id/cancel",
   requireCrmOrPortalOwner,
-  defaultPolicyMiddleware.requirePermission("events", "write"),
+  requireRegistrationPermission("write"),
   registrationController.cancelRegistration,
 );
 router.put(
@@ -94,7 +110,7 @@ router.put(
 router.get(
   "/:id/sessions/:sessionId/checkin-qr",
   requireCrmOrPortalOwner,
-  defaultPolicyMiddleware.requirePermission("events", "write"),
+  requireRegistrationPermission("write"),
   checkinController.getCheckinQr,
 );
 router.put(
@@ -105,7 +121,10 @@ router.put(
 );
 router.post(
   "/:id/sessions/:sessionId/attendance/self",
-  defaultPolicyMiddleware.requirePermission("events", "read"),
+  requireIdentifiedCrmOrPortal,
+  // Action stays "read" (as before) so the transition fallback is exactly
+  // the permission this route required until now.
+  requireRegistrationPermission("read"),
   checkinController.markAttendanceSelf,
 );
 

@@ -264,7 +264,57 @@ async function deleteAttendeeProfile({ tenantId, profileId }) {
   }
 }
 
+// Identity headers forwarded for a call made AS the verified caller. Note:
+// no x-internal-request - a portal user's request must never be upgraded to
+// a userless internal call.
+const CALLER_IDENTITY_HEADERS = [
+  "authorization",
+  "x-jwt-verified",
+  "x-auth-source",
+  "x-gateway-signature",
+  "x-token-expires-at",
+  "x-tenant-id",
+  "x-user-id",
+  "x-user-email",
+  "x-user-type",
+  "x-user-roles",
+  "x-user-permissions",
+  "x-correlation-id",
+];
+
+function buildCallerIdentityHeaders(req) {
+  const headers = { "Content-Type": "application/json" };
+  for (const name of CALLER_IDENTITY_HEADERS) {
+    const value = req?.headers?.[name];
+    if (value !== undefined && value !== null && value !== "") headers[name] = value;
+  }
+  return headers;
+}
+
+/**
+ * The verified PORTAL caller's OWN profile, via profile-service's
+ * GET /api/profile/my-profile (PORTAL-only there, resolved from the
+ * forwarded verified identity - the same call the portal app makes itself).
+ * Returns { profileId, membershipNumber } or null when the caller has no
+ * profile yet (profile-service answers 200 with data:null). Transport / 4xx
+ * / 5xx errors are thrown so the caller can fail closed rather than silently
+ * pricing a real member as a non-member.
+ */
+async function getCallerOwnProfile(req) {
+  const response = await axios.get(`${PROFILE_SERVICE_URL}/api/profile/my-profile`, {
+    headers: buildCallerIdentityHeaders(req),
+    timeout: 15000,
+  });
+  const data = response.data?.data;
+  if (!data || !data.profileId) return null;
+  return {
+    profileId: String(data.profileId),
+    membershipNumber: data.membershipNumber || null,
+  };
+}
+
 module.exports = {
+  getCallerOwnProfile,
   findOrCreateAttendeeProfile,
   checkAttendeeDuplicates,
   getProfileMembershipNumber,
