@@ -5,11 +5,15 @@ const Course = require("../models/course.model.js");
 const Registration = require("../models/registration.model.js");
 const { AppError } = require("../errors/AppError.js");
 const {
+  CRM,
+  PORTAL,
   ownerScopedRegistrationQuery,
   isPortalOwnerScoped,
   denyNotOwner,
 } = require("../middlewares/callerClass.mw.js");
+const { isUndergraduateStudentCategory } = require("../services/membershipCategory.util.js");
 const {
+  getCallerOwnProfile,
   checkAttendeeDuplicates,
   getProfileMembershipNumber,
   updateAttendeeProfileFields,
@@ -78,6 +82,59 @@ function legacyPriceCategoryForTierKey(tierKey) {
   if (tierKey === "GROUP_STUDENT") return "group_student";
   return "standard";
 }
+
+/**
+ * Server-side payment-method allow-list per VERIFIED caller class. CRM
+ * approval is not relied on as the protection: a PORTAL (or mobile - not
+ * distinguishable, see registeredVia) caller can only pay by card; staff may
+ * also record manual / comp / invoice. global_payments has no server-side
+ * integration (no verification of globalPaymentsTransactionId, not in the
+ * Registration enum), so it is rejected for everyone until it has one.
+ */
+const PAYMENT_METHODS_BY_CALLER = Object.freeze({
+  PORTAL: Object.freeze(["stripe"]),
+  CRM: Object.freeze(["stripe", "manual", "comp", "invoice"]),
+});
+const KNOWN_PAYMENT_METHODS = new Set(["stripe", "manual", "comp", "invoice"]);
+
+/** Returns an AppError when the caller may not use this method, else null. */
+function paymentMethodRejection(callerType, method) {
+  if (typeof method !== "string" || !KNOWN_PAYMENT_METHODS.has(method)) {
+    return new AppError(
+      `Payment method '${String(method)}' is not supported`,
+      400,
+      "PAYMENT_METHOD_NOT_SUPPORTED",
+    );
+  }
+  const allowed = PAYMENT_METHODS_BY_CALLER[callerType] || [];
+  if (!allowed.includes(method)) {
+    return new AppError(
+      `Payment method '${method}' is not available for this caller`,
+      403,
+      "PAYMENT_METHOD_NOT_ALLOWED",
+    );
+  }
+  return null;
+}
+
+/**
+ * PORTAL lineItems: the tier is chosen client-side, so its eligibility is
+ * checked server-side against the caller's VERIFIED membership (same rules
+ * the portal's own tier picker applies): member tiers need an active
+ * membership; STUDENT is offered to non-members and to undergraduate-student
+ * members only; GROUP_STUDENT and non-member tiers are open (minimum group
+ * size is still enforced by resolvePriceForTierKey). CRM operators keep
+ * their explicit tier choice (staff-reviewed, unchanged).
+ */
+function portalTierIneligibility({ tierKey, isActiveMember, membershipCategory }) {
+  if ((tierKey === "MEMBER" || tierKey === "EARLY_BIRD_MEMBER") && !isActiveMember) {
+    return `${tierKey} pricing is only available to active members`;
+  }
+  if (tierKey === "STUDENT" && isActiveMember && !isUndergraduateStudentCategory(membershipCategory)) {
+    return "STUDENT pricing is only available to non-members and undergraduate student members";
+  }
+  return null;
+}
 const {
   createRegistrationPaymentIntent,
   postManualRegistrationPayment,
@@ -136,8 +193,6 @@ async function createRegistration(req, res, next) {
       sessionIds,
       profile,
       paymentMethod,
-      registeredVia,
-      registeredByUserId,
       quantity,
       lineItems,
       // Portal/mobile authorize payment directly against account-service
@@ -161,9 +216,26 @@ async function createRegistration(req, res, next) {
     if (!profile || !profile.email) {
       return next(AppError.badRequest("profile.email is required"));
     }
-    if (!registeredVia || !["crm", "portal", "mobile"].includes(registeredVia)) {
-      return next(AppError.badRequest("registeredVia must be 'crm', 'portal' or 'mobile'"));
+    // Identity is derived from the VERIFIED caller, never the body
+    // (requireIdentifiedCrmOrPortal already admitted only CRM / PORTAL):
+    // - registeredVia: PORTAL -> "portal", CRM -> "crm". No verified signal
+    //   distinguishes the mobile app from the portal, so a client-sent
+    //   "mobile" is not trusted either. Body registeredVia is ignored.
+    // - registeredByUserId: the verified CRM staff id; null for PORTAL.
+    //   Body registeredByUserId is ignored.
+    const caller = req.verifiedCaller;
+    if (!caller || (caller.userType !== PORTAL && caller.userType !== CRM) || !caller.userId) {
+      // Fail closed if the route gate didn't run (never infer CRM by default).
+      return next(new AppError("Caller type is not permitted for this operation", 403, "FORBIDDEN_CALLER"));
     }
+    const isPortalCaller = caller.userType === PORTAL;
+    const registeredVia = isPortalCaller ? "portal" : "crm";
+    const registeredByUserId = isPortalCaller ? null : caller.userId;
+
+    // Payment method allow-list (before any lookup, pricing or write).
+    const method = paymentMethod === undefined || paymentMethod === null ? "stripe" : paymentMethod;
+    const methodError = paymentMethodRejection(caller.userType, method);
+    if (methodError) return next(methodError);
 
     // Multi-tier CRM flow: several {tierKey, quantity} lines summed into one
     // registration/payment. No lineItems (portal/mobile, or CRM with a
@@ -230,7 +302,69 @@ async function createRegistration(req, res, next) {
     let duplicateReview;
     let candidateProfileId = null;
     let candidateMembershipNumber = null;
-    if (profile.profileId) {
+    if (isPortalCaller) {
+      // PORTAL: client-supplied profile.profileId / membership number are
+      // IGNORED. The attendee is the caller's OWN profile, resolved from the
+      // verified identity via profile-service my-profile (forwarding the
+      // caller's identity, no x-internal-request). A portal member supplying
+      // another member's profileId therefore registers as themselves.
+      let ownProfile;
+      try {
+        ownProfile = await getCallerOwnProfile(req);
+      } catch (lookupError) {
+        // Fail closed: never price/link a registration whose identity
+        // couldn't be verified.
+        return next(
+          new AppError("Unable to verify your profile right now. Please try again.", 503, "PROFILE_LOOKUP_FAILED"),
+        );
+      }
+      if (ownProfile) {
+        candidateProfileId = ownProfile.profileId;
+        candidateMembershipNumber = ownProfile.membershipNumber;
+        duplicateReview = { status: "CONFIRMED_LINK", matchedProfileId: candidateProfileId };
+      } else {
+        // No profile bound to this login yet: record a verdict for the CRM
+        // reviewer, but an "exact" match on portal-SUPPLIED details is not a
+        // verified identity - it never drives pricing/membershipNumber and is
+        // downgraded to POTENTIAL_MATCH so approval needs an explicit
+        // reviewer decision instead of auto-linking to that profile.
+        const dupResult = await checkAttendeeDuplicates({
+          tenantId,
+          email: profile.email,
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          phone: profile.phone,
+          nmbiNumber: profile.nmbiNumber,
+          dateOfBirth: profile.dateOfBirth,
+          addressLine1: profile.addressLine1,
+          townCity: profile.townCity,
+          countyState: profile.countyState,
+          eircode: profile.eircode,
+          country: profile.country,
+        });
+        if (dupResult?.resolution === "exact" && dupResult.profileId) {
+          duplicateReview = {
+            status: "POTENTIAL_MATCH",
+            matchedProfileId: null,
+            matchSummary: [
+              {
+                profileId: dupResult.profileId,
+                membershipNumber: dupResult.membershipNumber || null,
+                classification: "EXACT_UNVERIFIED_PORTAL",
+              },
+            ],
+          };
+        } else if (dupResult?.resolution === "review" && dupResult.candidates?.length) {
+          duplicateReview = {
+            status: "POTENTIAL_MATCH",
+            matchedProfileId: null,
+            matchSummary: dupResult.candidates,
+          };
+        } else {
+          duplicateReview = { status: "NO_MATCH", matchedProfileId: null };
+        }
+      }
+    } else if (profile.profileId) {
       // CRM already searched and picked a known profile - trust that
       // selection outright, no fuzzy scoring needed. Still resolve the real
       // membershipNumber server-side rather than trusting the frontend.
@@ -299,6 +433,16 @@ async function createRegistration(req, res, next) {
       let priceBreakdown = [];
       let seatPriceCategory;
       if (hasLineItems) {
+        if (isPortalCaller) {
+          for (const line of lineItems) {
+            const reason = portalTierIneligibility({
+              tierKey: line.tierKey,
+              isActiveMember,
+              membershipCategory,
+            });
+            if (reason) throw new AppError(reason, 400, "TIER_NOT_ELIGIBLE");
+          }
+        }
         const resolved = await resolveLineItemsAmount({ tenantId, eventId, lineItems });
         amount = resolved.amount;
         currency = resolved.currency;
@@ -332,7 +476,6 @@ async function createRegistration(req, res, next) {
         eventCategoryCode = resolved.eventCategoryCode;
       }
 
-      const method = paymentMethod || "stripe";
       // Every registration starts pending_review now, regardless of payment
       // method - Profile creation/linking and payment capture/GL-posting
       // both happen only at CRM approval (see the /approve endpoint), never
@@ -381,7 +524,8 @@ async function createRegistration(req, res, next) {
         status: "pending",
         registeredVia,
         registeredByUserId: registeredByUserId || null,
-        submittedByUserId: req.ctx?.userId || req.userId || null,
+        // Verified caller id (requireIdentifiedCrmOrPortal guarantees one).
+        submittedByUserId: caller.userId,
       });
 
       // 5. Authorize/record payment - never captured/posted here. Only

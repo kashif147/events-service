@@ -834,6 +834,14 @@ async function uploadEventImage(req, res, next) {
   try {
     const { tenantId } = req.ctx;
 
+    // The blob path is "<tenantId>/<eventKey>-...": only "draft" or a real
+    // ObjectId may become eventKey, so a crafted :id (e.g. "..%2Fother") can
+    // never steer the upload outside the caller's tenant prefix.
+    const rawId = req.params.id;
+    if (rawId && rawId !== "draft" && !/^[a-f0-9]{24}$/i.test(rawId)) {
+      return next(AppError.badRequest("Invalid event id"));
+    }
+
     if (!req.file?.buffer) {
       return next(AppError.badRequest("Image file is required"));
     }
@@ -845,7 +853,7 @@ async function uploadEventImage(req, res, next) {
       );
     }
 
-    const eventKey = req.params.id && req.params.id !== "draft" ? req.params.id : "draft";
+    const eventKey = rawId && rawId !== "draft" ? rawId : "draft";
     const ext = req.file.originalname?.split(".").pop()?.toLowerCase() || "png";
     const safeExt = ["png", "jpg", "jpeg", "webp", "gif"].includes(ext) ? ext : "png";
     const blobPath = `${tenantId}/${eventKey}-${crypto.randomUUID()}.${safeExt}`;

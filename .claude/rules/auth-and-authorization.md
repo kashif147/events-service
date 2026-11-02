@@ -31,8 +31,50 @@ missing/unknown value; there is no inbound internal-request path in this service
   `submittedByUserId` equals the verified user id (the controller adds it to the query via
   `ownerScopedRegistrationQuery`). A PORTAL miss — other member, other tenant, or
   nonexistent — is always 403 `NOT_OWNER`, so existence never leaks.
-- Unchanged, self-scoped by construction: `GET /mine`, `POST .../attendance/self`;
-  `POST /` (create) is not caller-gated.
+- `requireIdentifiedCrmOrPortal` — self-scoped by construction: `GET /mine`,
+  `POST .../attendance/self`, `POST /` (create). CRM or PORTAL with a non-empty verified user
+  id (else 403 `FORBIDDEN_CALLER` / `NOT_OWNER`); it records `req.verifiedCaller` **before**
+  the PDP runs, because on PERMIT the policy middleware replaces `req.user` with the PDP's
+  user object — controllers read the caller class from `req.verifiedCaller`, not `req.user`.
 
-`tests/registrationObjectAuthz.p5.test.js` is the matrix for this; new registration routes
-must pick one of the two gates (or be self-scoped by construction) and extend it.
+`tests/registrationObjectAuthz.p5.test.js` and `tests/eventsAdminRegistrationsAuthz.p5b2.test.js`
+are the matrix for this; new registration routes must pick one of the gates and extend them.
+
+## Registration permissions: `registrations:*` for PORTAL (P5 batch 2)
+
+The portal self-service routes (`POST /`, `GET /mine`, `GET /:id`, `PUT /:id/cancel`,
+`GET .../checkin-qr`, `POST .../attendance/self`) use
+`requireRegistrationPermission(action)` (`middlewares/registrationPermission.mw.js`), after the
+caller-class/ownership gate:
+
+- CRM → `events:<action>` (unchanged).
+- PORTAL → `registrations:<action>` (codes `REGISTRATIONS_CREATE/READ/WRITE`), evaluated
+  directly by `evaluatePermission(req, resource, action)` — the same policy client the
+  middleware uses (`evaluateWithHeaders` for gateway headers, `evaluatePolicy` for a Bearer),
+  with the trusted user/tenant only, never body/query. **TRANSITION:** only when the PDP's deny
+  reason says the new permission is *absent* — `UNKNOWN_RESOURCE`,
+  `INSUFFICIENT_RESOURCE_PERMISSION`, `MISSING_PERMISSION`, `PERMISSION_NOT_DEFINED`
+  (`LEGACY_FALLBACK_ABSENT_REASONS`) — is the exact legacy `events:<action>` evaluated. Any
+  other reason (token/tenant failures, `POLICY_SERVICE_ERROR`, evaluation errors/timeouts)
+  fails closed with no fallback. On PERMIT it sets `req.policyContext`/`req.user`/`req.userId`/
+  `req.tenantId` like the middleware. No fallback ever applies to CRM or admin routes.
+  `LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK` is temporary compatibility debt; retire it only
+  when: the catalogue codes exist; canonical MEMBER/NON-MEMBER roles include
+  `registrations:*`; any live-role migration is separately approved; token issuance is proven
+  to carry the new permissions; and the registration regression tests pass without fallback.
+- anything else → 403 `FORBIDDEN_CALLER`.
+
+Actions mirror what each route required before (so the fallback is exactly the old check):
+create → `create`; `/mine`, `GET /:id`, `attendance/self` → `read`; cancel, checkin-qr → `write`.
+A permission never grants another member's registration — ownership is still enforced by
+the gates above. Approve/reject and every other staff route stay `requireCrmUser` + `events:*`.
+
+## Event administration is CRM-only (P5 batch 2)
+
+`requireCrmUser` runs before the existing `events:create|write` PDP check on every event,
+session, course, certificate-issue and image-upload mutation (before multer on the image
+route), and on **all** `/templates` routes (per-user CRM grid "Save View" templates — CRM-only
+data; the controller's own `assertCrmUser` stays as a second layer). A PORTAL caller gets 403
+`CRM_ONLY` whatever permissions its role holds. Read routes (`GET /events`, `/events/:id`,
+`/events/:id/price-quote`, `/courses`, `/courses/:id`) are unchanged (`events:read`, portal
+catalogue).

@@ -9,7 +9,7 @@ const EventSession = require("../models/eventSession.model.js");
 const TENANT_ID = "tenant-meeting-field-test";
 
 function authHeader() {
-  const token = jwt.sign({ sub: "user-1", tenantId: TENANT_ID, roles: [] }, process.env.JWT_SECRET);
+  const token = jwt.sign({ sub: "user-1", tenantId: TENANT_ID, userType: "CRM", roles: [] }, process.env.JWT_SECRET);
   return `Bearer ${token}`;
 }
 
