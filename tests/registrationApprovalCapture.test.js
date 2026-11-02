@@ -17,7 +17,7 @@ const Registration = require("../models/registration.model.js");
 const TENANT_ID = "tenant-approval-capture-test";
 
 function authHeader() {
-  const token = jwt.sign({ sub: "user-1", tenantId: TENANT_ID, roles: [] }, process.env.JWT_SECRET);
+  const token = jwt.sign({ sub: "user-1", tenantId: TENANT_ID, userType: "CRM", roles: [] }, process.env.JWT_SECRET);
   return `Bearer ${token}`;
 }
 

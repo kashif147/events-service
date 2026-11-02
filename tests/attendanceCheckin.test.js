@@ -12,12 +12,12 @@ const { completeEventById } = require("../controllers/event.controller.js");
 const TENANT_ID = "tenant-attendance-test";
 
 function authHeader() {
-  const token = jwt.sign({ sub: "user-1", tenantId: TENANT_ID, roles: [] }, process.env.JWT_SECRET);
+  const token = jwt.sign({ sub: "user-1", tenantId: TENANT_ID, userType: "CRM", roles: [] }, process.env.JWT_SECRET);
   return `Bearer ${token}`;
 }
 
 function selfAuthHeader(userId) {
-  const token = jwt.sign({ sub: userId, tenantId: TENANT_ID, roles: [] }, process.env.JWT_SECRET);
+  const token = jwt.sign({ sub: userId, tenantId: TENANT_ID, userType: "PORTAL", roles: [] }, process.env.JWT_SECRET);
   return `Bearer ${token}`;
 }
 

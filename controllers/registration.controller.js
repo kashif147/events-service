@@ -5,6 +5,11 @@ const Course = require("../models/course.model.js");
 const Registration = require("../models/registration.model.js");
 const { AppError } = require("../errors/AppError.js");
 const {
+  ownerScopedRegistrationQuery,
+  isPortalOwnerScoped,
+  denyNotOwner,
+} = require("../middlewares/callerClass.mw.js");
+const {
   checkAttendeeDuplicates,
   getProfileMembershipNumber,
   updateAttendeeProfileFields,
@@ -724,12 +729,17 @@ async function getRegistrationsByProfile(req, res, next) {
 async function getRegistrationById(req, res, next) {
   try {
     const { tenantId } = req.ctx;
-    const registration = await Registration.findOne({
-      _id: req.params.id,
-      tenantId,
-      isDeleted: { $ne: true },
-    }).lean();
-    if (!registration) return next(AppError.notFound("Registration not found"));
+    const registration = await Registration.findOne(
+      ownerScopedRegistrationQuery(req, {
+        _id: req.params.id,
+        tenantId,
+        isDeleted: { $ne: true },
+      }),
+    ).lean();
+    if (!registration) {
+      if (isPortalOwnerScoped(req)) return denyNotOwner(res);
+      return next(AppError.notFound("Registration not found"));
+    }
 
     const [eventsById, coursesById] = await Promise.all([
       getEventsMapForRegistrations({ tenantId, registrations: [registration] }),
@@ -918,14 +928,17 @@ async function cancelRegistration(req, res, next) {
   try {
     const { tenantId } = req.ctx;
     const registration = await Registration.findOneAndUpdate(
-      { _id: req.params.id, tenantId, isDeleted: { $ne: true } },
+      ownerScopedRegistrationQuery(req, { _id: req.params.id, tenantId, isDeleted: { $ne: true } }),
       // isActive:false frees the unique registration slot for this
       // profile/event(-or-course) so re-registering the same profile no
       // longer 400s with "already registered" (see registration.model.js).
       { $set: { status: "cancelled", isActive: false } },
       { new: true },
     );
-    if (!registration) return next(AppError.notFound("Registration not found"));
+    if (!registration) {
+      if (isPortalOwnerScoped(req)) return denyNotOwner(res);
+      return next(AppError.notFound("Registration not found"));
+    }
 
     await publishRegistrationCancelled(registration, tenantId);
 
