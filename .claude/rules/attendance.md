@@ -14,13 +14,13 @@ once every session it's required to attend has actually happened.
 1. **QR self-check-in** (`method:"qr"`) — `services/checkinToken.service.js` signs a
    short-lived HMAC token (`CHECKIN_TOKEN_SECRET` env var) encoding
    `tenantId`/`registrationId`/`sessionId`; `GET /registrations/:id/sessions/:sessionId/checkin-qr`
-   (authenticated) mints one, `POST /api/public/checkin/:token`
+   (CRM, or a PORTAL caller for their own registration only - see auth-and-authorization.md) mints one, `POST /api/public/checkin/:token`
    (`routes/publicCheckin.routes.js`, mounted in `app.js` **before**
    `app.use(authenticate)` — the token itself is the credential) redeems it. The write is
    append-only and atomically guarded (`"sessionAttendance.sessionId": {$ne: sessionId}`
    in the query), so a replayed/duplicate scan is a safe idempotent no-op, not a duplicate
    entry or an error.
-2. **Manual** — CRM: `PUT /registrations/:id/sessions/:sessionId/attendance`
+2. **Manual** — CRM (userType CRM only): `PUT /registrations/:id/sessions/:sessionId/attendance`
    (`method:"manual-crm"`, can set *or overwrite* any prior entry for that session,
    including a Zoom/Teams auto-synced one). Attendee self-service outside the QR flow:
    `POST /registrations/:id/sessions/:sessionId/attendance/self`

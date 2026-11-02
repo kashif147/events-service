@@ -2,6 +2,11 @@ const mongoose = require("mongoose");
 const Registration = require("../models/registration.model.js");
 const EventSession = require("../models/eventSession.model.js");
 const { AppError } = require("../errors/AppError.js");
+const {
+  ownerScopedRegistrationQuery,
+  isPortalOwnerScoped,
+  denyNotOwner,
+} = require("../middlewares/callerClass.mw.js");
 const { signCheckinToken, verifyCheckinToken } = require("../services/checkinToken.service.js");
 
 /**
@@ -14,8 +19,13 @@ async function getCheckinQr(req, res, next) {
     const { tenantId } = req.ctx;
     const { id, sessionId } = req.params;
 
-    const registration = await Registration.findOne({ _id: id, tenantId, isDeleted: { $ne: true } }).lean();
-    if (!registration) return next(AppError.notFound("Registration not found"));
+    const registration = await Registration.findOne(
+      ownerScopedRegistrationQuery(req, { _id: id, tenantId, isDeleted: { $ne: true } }),
+    ).lean();
+    if (!registration) {
+      if (isPortalOwnerScoped(req)) return denyNotOwner(res);
+      return next(AppError.notFound("Registration not found"));
+    }
     const session = await EventSession.findOne({ _id: sessionId, tenantId, isDeleted: { $ne: true } }).lean();
     if (!session) return next(AppError.notFound("Session not found"));
 
