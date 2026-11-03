@@ -219,11 +219,28 @@ const RegistrationSchema = new mongoose.Schema(
           status: { type: String, enum: ["attended", "absent"], required: true },
           method: {
             type: String,
-            enum: ["qr", "zoom", "teams", "manual-attendee", "manual-crm"],
+            // "qr" = legacy public-link redemption (retired; kept so existing entries still load);
+            // "qr-organizer" = organiser scan (CRM + events:write), scannedBy = the scanner.
+            enum: ["qr", "qr-organizer", "zoom", "teams", "manual-attendee", "manual-crm"],
             required: true,
           },
           markedAt: { type: Date, default: Date.now },
           markedBy: { type: String, default: null }, // userId for manual-crm, null for self/auto methods
+          scannedBy: { type: String, default: null }, // qr-organizer only
+          // CRM corrections (manual-crm): reason required outside the QR window or when overwriting;
+          // the overwritten entry is kept in `previous`.
+          reason: { type: String, default: null, maxlength: 500 },
+          outsideWindow: { type: Boolean, default: null },
+          previous: {
+            type: {
+              status: { type: String, default: null },
+              method: { type: String, default: null },
+              markedAt: { type: Date, default: null },
+              markedBy: { type: String, default: null },
+            },
+            default: null,
+            _id: false,
+          },
           connectedMinutes: { type: Number, default: null }, // zoom/teams only
           scheduledMinutes: { type: Number, default: null }, // zoom/teams only
           connectedPercent: { type: Number, default: null }, // zoom/teams only

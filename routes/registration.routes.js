@@ -52,6 +52,14 @@ router.get(
   requireRegistrationPermission("read"),
   registrationController.getMyRegistrations,
 );
+// P5 organiser scan: the authenticated organiser (CRM + events:write, same tenant - checked in the
+// controller against the pass) records presence; the pass alone never does.
+router.post(
+  "/checkin/scan",
+  requireCrmUser,
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  checkinController.scanCheckinToken,
+);
 router.get(
   "/:id",
   requireCrmOrPortalOwner,
@@ -117,11 +125,13 @@ router.put(
   studentVerificationController.decideStudentVerification,
 );
 
-// Attendance - QR generation: CRM, or the attendee for their own registration;
-// CRM marking: CRM only; self-marking: PORTAL only (CRM -> 403 PORTAL_ONLY, use
-// the CRM route), ownership-checked inside the controller against
-// submittedByUserId. All three validate the session against the
-// registration's own event (services/attendanceEligibility.service.js).
+// Attendance - pass minting: CRM, or the attendee for their own registration
+// (a pass is shown to the organiser, never self-redeemed); organiser scan:
+// POST /checkin/scan above; CRM marking/correction: CRM only (reason rules +
+// audit in the controller); self-marking: PORTAL only, virtual sessions only
+// (CRM -> 403 PORTAL_ONLY), ownership-checked against submittedByUserId. All
+// validate the session against the registration's own event and the P5 time
+// window (services/attendanceEligibility.service.js).
 router.get(
   "/:id/sessions/:sessionId/checkin-qr",
   requireCrmOrPortalOwner,

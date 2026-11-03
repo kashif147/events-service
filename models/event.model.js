@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const { PricingTierSchema } = require("./pricingTier.schema.js");
 const { tenantOwnershipPlugin } = require("./plugins/tenantOwnership.plugin");
+const { isValidIanaTimezone } = require("../services/attendanceWindow.service.js");
 
 const EventSchema = new mongoose.Schema(
   {
@@ -25,6 +26,18 @@ const EventSchema = new mongoose.Schema(
     venue: { type: String, default: null }, // display string: venue name + address
     isVirtual: { type: Boolean, default: false },
     imageUrl: { type: String, default: null },
+    // P5 attendance window: the event's explicit IANA timezone (e.g. "Europe/Dublin"). No default -
+    // never inferred or back-filled; attendee attendance fails closed while it is null. Set at create
+    // (CRM, pre-filled from the tenant setting and confirmed by the user) or through the audited
+    // PUT /events/:id/timezone correction. A later tenant-setting change never moves it.
+    timezone: {
+      type: String,
+      default: null,
+      validate: { validator: (v) => v == null || isValidIanaTimezone(v), message: "timezone must be an IANA name" },
+    },
+    timezoneSource: { type: String, enum: ["crm_explicit", null], default: null },
+    timezoneSetAt: { type: Date, default: null },
+    timezoneSetBy: { type: String, default: null },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
     capacity: { type: Number, default: null },

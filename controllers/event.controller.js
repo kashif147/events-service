@@ -23,6 +23,22 @@ const {
 const { applyAttendanceRollupForCompletedEvent } = require("../services/attendanceRollup.service.js");
 const { maybeIssueCertificatesForCompletedEvent } = require("../services/autoCertificate.service.js");
 const { parseMeetingLink } = require("../services/meetingLinkParser.js");
+const { isValidIanaTimezone, validateSessionTiming } = require("../services/attendanceWindow.service.js");
+const { withTransaction } = require("../services/transaction.js");
+const {
+  changedScheduleFields,
+  scheduleIsAudited,
+  takeReason,
+  reasonGate,
+  auditScheduleChange,
+} = require("../services/scheduleChange.service.js");
+
+const TIMEZONE_FIELDS = ["timezone", "timezoneSource", "timezoneSetAt", "timezoneSetBy"];
+const SESSION_TIMING_FIELDS = ["localDate", "endLocalDate", "startTime", "endTime", "startUtcOffset", "endUtcOffset"];
+
+function timingAppError(e) {
+  return new AppError(e.message, e.status || 400, e.code);
+}
 
 /** Builds the EventSession.meeting sub-object from a raw pasted joinUrl (the
  * CreateEventDrawer/ScheduleManagementDrawer "Meeting Link" field) - detects
@@ -287,8 +303,12 @@ async function createEvent(req, res, next) {
       refundPolicyDays,
       allowPartialAttendance,
       perDayPricing,
+      timezone,
     } = req.body || {};
 
+    if (timezone != null && timezone !== "" && !isValidIanaTimezone(timezone)) {
+      return next(new AppError("timezone must be an IANA timezone name such as Europe/Dublin", 400, "INVALID_TIMEZONE"));
+    }
     if (!title || !startDate || !endDate) {
       return next(AppError.badRequest("title, startDate and endDate are required"));
     }
@@ -354,6 +374,11 @@ async function createEvent(req, res, next) {
       refundPolicyDays,
       allowPartialAttendance,
       perDayPricing,
+      // P5: explicit only (the CRM pre-fills it from the tenant setting and the user confirms);
+      // never defaulted - attendance fails closed while it is null.
+      ...(timezone
+        ? { timezone, timezoneSource: "crm_explicit", timezoneSetAt: new Date(), timezoneSetBy: userId || null }
+        : {}),
       createdBy: userId,
       createdByEmail: req.user?.email || null,
       updatedBy: userId,
@@ -377,6 +402,13 @@ async function updateEvent(req, res, next) {
     if (!existing) return next(AppError.notFound("Event not found"));
 
     const body = req.body || {};
+
+    const tzKey = Object.keys(body).find((k) => TIMEZONE_FIELDS.includes(k));
+    if (tzKey) {
+      return next(
+        new AppError("The event timezone is changed through PUT /events/:id/timezone (audited)", 400, "USE_TIMEZONE_ENDPOINT"),
+      );
+    }
 
     if (existing.status === "Published") {
       // Every Published status transition (unpublish/cancel/complete) carries
@@ -686,6 +718,75 @@ async function softDeleteEvent(req, res, next) {
   }
 }
 
+/**
+ * P5 audited timezone set/correction (CRM + events:write). Works on Draft and Published events (the
+ * correction path for events created before timezones existed); Completed/Cancelled schedules are
+ * locked. A reason is required once the event is Published, has registrations, or already had a
+ * timezone. Audited through the outbox in the same transaction. No bulk path - one event at a time.
+ */
+async function setEventTimezone(req, res, next) {
+  try {
+    const { tenantId, userId } = req.ctx;
+    const body = { ...(req.body || {}) };
+    const { reason, error: reasonError } = takeReason(body);
+    if (reasonError) return next(reasonError);
+    const { timezone } = body;
+    if (!isValidIanaTimezone(timezone)) {
+      return next(new AppError("timezone must be an IANA timezone name such as Europe/Dublin", 400, "INVALID_TIMEZONE"));
+    }
+    const existing = await Event.findOne({ _id: req.params.id, tenantId, isDeleted: { $ne: true } }).lean();
+    if (!existing) return next(AppError.notFound("Event not found"));
+    if (existing.status === "Completed" || existing.status === "Cancelled") {
+      return next(new AppError("The schedule of a completed or cancelled event cannot be changed", 409, "EVENT_SCHEDULE_LOCKED"));
+    }
+    if (existing.timezone === timezone) {
+      return res.status(200).json({ success: true, data: omitProductFields(existing), unchanged: true });
+    }
+    const audited = existing.timezone != null || (await scheduleIsAudited(existing));
+    const gate = reasonGate({ audited, reason, scope: "event-timezone", tenantId, eventId: existing._id, sessionId: null });
+    if (gate.error) return next(gate.error);
+    const { reasonSource } = gate;
+
+    const updated = await withTransaction(async (txn) => {
+      const ev = await Event.findOneAndUpdate(
+        { _id: existing._id, tenantId, isDeleted: { $ne: true }, timezone: existing.timezone ?? null },
+        {
+          $set: {
+            timezone,
+            timezoneSource: "crm_explicit",
+            timezoneSetAt: new Date(),
+            timezoneSetBy: userId || null,
+            updatedBy: userId,
+            updatedByEmail: req.user?.email || null,
+          },
+        },
+        { new: true, runValidators: true, session: txn },
+      );
+      if (!ev) return null;
+      if (audited) {
+        await auditScheduleChange({
+          tenantId,
+          eventId: existing._id,
+          scope: "event-timezone",
+          changes: { timezone: { from: existing.timezone ?? null, to: timezone } },
+          reason,
+          reasonSource,
+          actorUserId: userId,
+          session: txn,
+          correlationId: req.correlationId,
+        });
+      }
+      return ev;
+    });
+    if (!updated) {
+      return next(new AppError("The event timezone changed while you were editing it - reload and try again", 409, "EVENT_CHANGED_CONCURRENTLY"));
+    }
+    return res.status(200).json({ success: true, data: omitProductFields(updated) });
+  } catch (error) {
+    return next(AppError.internalServerError(error.message || "Failed to set event timezone"));
+  }
+}
+
 async function addSession(req, res, next) {
   try {
     const { tenantId, userId } = req.ctx;
@@ -710,10 +811,26 @@ async function addSession(req, res, next) {
       pricingTiers,
       joinUrl,
       organizerUpn,
+      localDate,
+      endLocalDate,
+      startUtcOffset,
+      endUtcOffset,
     } = req.body || {};
     if (!label || !date) {
       return next(AppError.badRequest("label and date are required"));
     }
+    const { reason, error: reasonError } = takeReason({ ...(req.body || {}) });
+    if (reasonError) return next(reasonError);
+    const timing = { localDate, endLocalDate, startTime, endTime, startUtcOffset, endUtcOffset };
+    const timingError = validateSessionTiming(timing, event.timezone);
+    if (timingError) return next(timingAppError(timingError));
+    if (event.status === "Completed" || event.status === "Cancelled") {
+      return next(new AppError("The schedule of a completed or cancelled event cannot be changed", 409, "EVENT_SCHEDULE_LOCKED"));
+    }
+    const audited = await scheduleIsAudited(event);
+    const gate = reasonGate({ audited, reason, scope: "session-add", tenantId, eventId: event._id, sessionId: null });
+    if (gate.error) return next(gate.error);
+    const { reasonSource } = gate;
 
     try {
       validatePricingTiers(pricingTiers);
@@ -721,13 +838,17 @@ async function addSession(req, res, next) {
       return next(validationError);
     }
 
-    const session = await EventSession.create({
+    const doc = {
       tenantId,
       eventId: event._id,
       label,
       date,
       startTime,
       endTime,
+      localDate: localDate || null,
+      endLocalDate: endLocalDate || null,
+      startUtcOffset: startUtcOffset || null,
+      endUtcOffset: endUtcOffset || null,
       isVirtual,
       productId,
       productCode,
@@ -738,6 +859,24 @@ async function addSession(req, res, next) {
       meeting: buildMeetingField(joinUrl, organizerUpn),
       createdBy: userId,
       updatedBy: userId,
+    };
+    const session = await withTransaction(async (txn) => {
+      const [created] = await EventSession.create([doc], { session: txn });
+      if (audited) {
+        await auditScheduleChange({
+          tenantId,
+          eventId: event._id,
+          sessionId: created._id,
+          scope: "session-add",
+          changes: changedScheduleFields({}, created.toObject()),
+          reason,
+          reasonSource,
+          actorUserId: userId,
+          session: txn,
+          correlationId: req.correlationId,
+        });
+      }
+      return created;
     });
 
     return res.status(201).json({ success: true, data: omitProductFields(session) });
@@ -756,7 +895,9 @@ async function updateSession(req, res, next) {
     });
     if (!event) return next(AppError.notFound("Event not found"));
 
-    const body = req.body || {};
+    const body = { ...(req.body || {}) };
+    const { reason, error: reasonError } = takeReason(body);
+    if (reasonError) return next(reasonError);
 
     if (Object.prototype.hasOwnProperty.call(body, "pricingTiers")) {
       try {
@@ -764,6 +905,33 @@ async function updateSession(req, res, next) {
       } catch (validationError) {
         return next(validationError);
       }
+    }
+
+    const stored = await EventSession.findOne({
+      _id: req.params.sessionId,
+      eventId: req.params.id,
+      tenantId,
+      isDeleted: { $ne: true },
+    }).lean();
+    if (!stored) return next(AppError.notFound("Session not found"));
+    const merged = { ...stored, ...body };
+    const changes = changedScheduleFields(stored, merged);
+    const scheduleChanged = Object.keys(changes).length > 0;
+    let audited = false;
+    let reasonSource = null;
+    if (scheduleChanged) {
+      if (event.status === "Completed" || event.status === "Cancelled") {
+        return next(new AppError("The schedule of a completed or cancelled event cannot be changed", 409, "EVENT_SCHEDULE_LOCKED"));
+      }
+      const timingError = validateSessionTiming(
+        Object.fromEntries(SESSION_TIMING_FIELDS.map((f) => [f, merged[f]])),
+        event.timezone,
+      );
+      if (timingError) return next(timingAppError(timingError));
+      audited = await scheduleIsAudited(event);
+      const gate = reasonGate({ audited, reason, scope: "session-update", tenantId, eventId: event._id, sessionId: req.params.sessionId });
+      if (gate.error) return next(gate.error);
+      reasonSource = gate.reasonSource;
     }
 
     // Only touch `meeting` when the caller actually sent joinUrl/organizerUpn
@@ -802,17 +970,36 @@ async function updateSession(req, res, next) {
       }
     }
 
-    const session = await EventSession.findOneAndUpdate(
-      {
-        _id: req.params.sessionId,
-        eventId: req.params.id,
-        tenantId,
-        isDeleted: { $ne: true },
-      },
-      { $set: updateSet },
-      { new: true, runValidators: true },
+    // Conditional on the schedule values read above, so an audited "from" is always the real one.
+    const guard = Object.fromEntries(
+      SESSION_TIMING_FIELDS.concat(["isVirtual", "date"]).map((f) => [f, stored[f] === undefined ? null : stored[f]]),
     );
-    if (!session) return next(AppError.notFound("Session not found"));
+    const session = await withTransaction(async (txn) => {
+      const updated = await EventSession.findOneAndUpdate(
+        { _id: stored._id, eventId: req.params.id, tenantId, isDeleted: { $ne: true }, ...guard },
+        { $set: updateSet },
+        { new: true, runValidators: true, session: txn },
+      );
+      if (!updated) return null;
+      if (audited) {
+        await auditScheduleChange({
+          tenantId,
+          eventId: event._id,
+          sessionId: updated._id,
+          scope: "session-update",
+          changes,
+          reason,
+          reasonSource,
+          actorUserId: userId,
+          session: txn,
+          correlationId: req.correlationId,
+        });
+      }
+      return updated;
+    });
+    if (!session) {
+      return next(new AppError("The session changed while you were editing it - reload and try again", 409, "SESSION_CHANGED_CONCURRENTLY"));
+    }
 
     return res.status(200).json({ success: true, data: omitProductFields(session) });
   } catch (error) {
@@ -825,16 +1012,42 @@ async function updateSession(req, res, next) {
 async function deleteSession(req, res, next) {
   try {
     const { tenantId, userId } = req.ctx;
-    const session = await EventSession.findOneAndUpdate(
-      {
-        _id: req.params.sessionId,
-        eventId: req.params.id,
-        tenantId,
-        isDeleted: { $ne: true },
-      },
-      { $set: { isDeleted: true, isActive: false, updatedBy: userId } },
-      { new: true },
-    );
+    const { reason, error: reasonError } = takeReason({ ...(req.body || {}), ...(req.query?.scheduleChangeReason ? { scheduleChangeReason: req.query.scheduleChangeReason } : {}) });
+    if (reasonError) return next(reasonError);
+    const event = await Event.findOne({ _id: req.params.id, tenantId, isDeleted: { $ne: true } }).lean();
+    if (!event) return next(AppError.notFound("Event not found"));
+    const audited = await scheduleIsAudited(event);
+    const gate = reasonGate({ audited, reason, scope: "session-delete", tenantId, eventId: event._id, sessionId: req.params.sessionId });
+    if (gate.error) return next(gate.error);
+    const { reasonSource } = gate;
+    const session = await withTransaction(async (txn) => {
+      const deleted = await EventSession.findOneAndUpdate(
+        {
+          _id: req.params.sessionId,
+          eventId: req.params.id,
+          tenantId,
+          isDeleted: { $ne: true },
+        },
+        { $set: { isDeleted: true, isActive: false, updatedBy: userId } },
+        { new: true, session: txn },
+      );
+      if (!deleted) return null;
+      if (audited) {
+        await auditScheduleChange({
+          tenantId,
+          eventId: event._id,
+          sessionId: deleted._id,
+          scope: "session-delete",
+          changes: { isDeleted: { from: false, to: true } },
+          reason,
+          reasonSource,
+          actorUserId: userId,
+          session: txn,
+          correlationId: req.correlationId,
+        });
+      }
+      return deleted;
+    });
     if (!session) return next(AppError.notFound("Session not found"));
     return res.status(200).json({ success: true, data: omitProductFields(session) });
   } catch (error) {
@@ -908,6 +1121,7 @@ module.exports = {
   completeEventById,
   getLastRelevantDate,
   softDeleteEvent,
+  setEventTimezone,
   addSession,
   updateSession,
   deleteSession,

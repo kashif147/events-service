@@ -17,6 +17,12 @@ const CertificateSchema = new mongoose.Schema(
       enum: ["pending", "issued", "revoked"],
       default: "pending",
     },
+    // P5: an attendance downgrade after issuance flags the certificate for staff review. It is
+    // never revoked automatically and its status is not changed.
+    reviewRequired: { type: Boolean, default: false },
+    reviewReason: { type: String, enum: ["ATTENDANCE_DOWNGRADED", null], default: null },
+    reviewFlaggedAt: { type: Date, default: null },
+    reviewFlaggedBy: { type: String, default: null },
     createdBy: { type: String, default: null },
   },
   { timestamps: true },

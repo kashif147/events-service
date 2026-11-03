@@ -1,10 +1,11 @@
 /**
  * P5 B3 - attendance structure: POST .../attendance/self, GET .../checkin-qr,
- * POST /public/checkin/:token and PUT .../attendance (CRM) validate the
- * session against the registration's own event in the verified tenant, the
- * registration's eligibility, and partial-attendance session selection. The
- * self route is PORTAL-only. No time window is enforced (product decision
- * pending) - see .claude/rules/attendance.md.
+ * POST /registrations/checkin/scan (organiser scan) and PUT .../attendance
+ * (CRM) validate the session against the registration's own event in the
+ * verified tenant, the registration's eligibility, and partial-attendance
+ * session selection. The self route is PORTAL-only. Fixtures put "now" inside
+ * the P5 window (tests/helpers/attendanceTiming.js); the window rules
+ * themselves are in attendanceWindow.p5.test.js.
  *
  * PDP mocked (tests/helpers/pdpMock.js); AUTH_BYPASS_ENABLED off so the
  * caller class and PDP path are the real ones.
@@ -24,6 +25,7 @@ const EventSession = require("../models/eventSession.model.js");
 const Course = require("../models/course.model.js");
 const Registration = require("../models/registration.model.js");
 const { signCheckinToken } = require("../services/checkinToken.service.js");
+const { TZ, sessionTiming } = require("./helpers/attendanceTiming.js");
 
 const TENANT = "tenant-p5b3-attendance-a";
 const OTHER_TENANT = "tenant-p5b3-attendance-b";
@@ -67,6 +69,7 @@ const eventBase = {
   startDate: new Date("2030-01-01T09:00:00Z"),
   endDate: new Date("2030-01-02T17:00:00Z"),
   status: "Published",
+  timezone: TZ,
 };
 
 let eventA;
@@ -86,13 +89,16 @@ beforeEach(async () => {
   eventA = await Event.create({ tenantId: TENANT, ...eventBase });
   eventOther = await Event.create({ tenantId: TENANT, ...eventBase, title: "Other event" });
   eventTenantB = await Event.create({ tenantId: OTHER_TENANT, ...eventBase });
-  sessionA1 = await EventSession.create({ tenantId: TENANT, eventId: eventA._id, label: "Day 1", date: eventA.startDate });
-  sessionA2 = await EventSession.create({ tenantId: TENANT, eventId: eventA._id, label: "Day 2", date: eventA.endDate });
-  sessionOtherEvent = await EventSession.create({ tenantId: TENANT, eventId: eventOther._id, label: "Day 1", date: eventA.startDate });
-  sessionTenantB = await EventSession.create({ tenantId: OTHER_TENANT, eventId: eventTenantB._id, label: "Day 1", date: eventA.startDate });
+  // Virtual + live (now inside the window) so the self route's virtual-only and
+  // window rules don't mask the structural cases under test.
+  const live = { ...sessionTiming(), isVirtual: true };
+  sessionA1 = await EventSession.create({ tenantId: TENANT, eventId: eventA._id, label: "Day 1", date: eventA.startDate, ...live });
+  sessionA2 = await EventSession.create({ tenantId: TENANT, eventId: eventA._id, label: "Day 2", date: eventA.endDate, ...live });
+  sessionOtherEvent = await EventSession.create({ tenantId: TENANT, eventId: eventOther._id, label: "Day 1", date: eventA.startDate, ...live });
+  sessionTenantB = await EventSession.create({ tenantId: OTHER_TENANT, eventId: eventTenantB._id, label: "Day 1", date: eventA.startDate, ...live });
   // Tenant-B session pointing at tenant A's event id: only the tenantId filter
   // can reject it (the eventId matches), so the tenant cases are discriminating.
-  sessionTenantBOnEventA = await EventSession.create({ tenantId: OTHER_TENANT, eventId: eventA._id, label: "Day 1", date: eventA.startDate });
+  sessionTenantBOnEventA = await EventSession.create({ tenantId: OTHER_TENANT, eventId: eventA._id, label: "Day 1", date: eventA.startDate, ...live });
   defaultPolicyMiddleware.calls.length = 0;
 });
 
@@ -318,42 +324,62 @@ describe("GET .../checkin-qr (QR minting)", () => {
   });
 });
 
-describe("POST /public/checkin/:token (QR redemption)", () => {
+describe("POST /registrations/checkin/scan (organiser scan)", () => {
   const tokenFor = (reg, session, tenantId = TENANT) =>
-    signCheckinToken({ tenantId, registrationId: String(reg._id), sessionId: String(session._id) });
+    signCheckinToken({ tenantId, registrationId: String(reg._id), sessionId: String(session._id), expiresAt: Date.now() + 3600000 });
+  const scan = (token, auth = crm()) => request(app).post("/api/registrations/checkin/scan").set("Authorization", auth).send({ token });
 
-  it("valid token -> 200, one qr entry", async () => {
+  it("valid pass scanned by CRM -> 200, one qr-organizer entry with scannedBy", async () => {
     const reg = await makeRegistration();
-    const res = await request(app).post(`/api/public/checkin/${tokenFor(reg, sessionA1)}`);
+    const res = await scan(tokenFor(reg, sessionA1));
     expect(res.status).toBe(200);
     expect(res.body.data.alreadyCheckedIn).toBe(false);
-    expect(await attendanceOf(reg)).toHaveLength(1);
+    const entries = await attendanceOf(reg);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ status: "attended", method: "qr-organizer", scannedBy: CRM_USER });
   });
 
-  it("token pairing a session of another event -> 404, no write", async () => {
+  it("pass pairing a session of another event -> 404, no write", async () => {
     const reg = await makeRegistration();
-    const res = await request(app).post(`/api/public/checkin/${tokenFor(reg, sessionOtherEvent)}`);
+    const res = await scan(tokenFor(reg, sessionOtherEvent));
     expect(res.status).toBe(404);
     expect(await attendanceOf(reg)).toHaveLength(0);
   });
 
-  it("token for a registration since cancelled / still pending -> 409, no write", async () => {
+  it("pass for a registration since cancelled / still pending -> 409, no write", async () => {
     for (const overrides of [
       { status: "cancelled", isActive: false },
       { status: "pending", approvalStatus: "pending_review" },
     ]) {
       const reg = await makeRegistration(overrides);
-      const res = await request(app).post(`/api/public/checkin/${tokenFor(reg, sessionA1)}`);
+      const res = await scan(tokenFor(reg, sessionA1));
       expect(res.status).toBe(409);
       expect(await attendanceOf(reg)).toHaveLength(0);
     }
   });
 
-  it("token for an unselected session on a partial-attendance event -> 403, no write", async () => {
+  it("pass for an unselected session on a partial-attendance event -> 403, no write", async () => {
     await Event.updateOne({ _id: eventA._id }, { $set: { allowPartialAttendance: true } });
     const reg = await makeRegistration({ sessionIds: [sessionA1._id] });
-    const res = await request(app).post(`/api/public/checkin/${tokenFor(reg, sessionA2)}`);
+    const res = await scan(tokenFor(reg, sessionA2));
     expect(res.status).toBe(403);
+    expect(await attendanceOf(reg)).toHaveLength(0);
+  });
+
+  it("the attendee (PORTAL owner) cannot redeem their own pass", async () => {
+    const reg = await makeRegistration();
+    const res = await scan(tokenFor(reg, sessionA1), portalA());
+    expect(res.status).toBe(403);
+    expect(await attendanceOf(reg)).toHaveLength(0);
+  });
+
+  it("the retired public link writes nothing (POST 410; GET is informational)", async () => {
+    const reg = await makeRegistration();
+    const post = await request(app).post(`/api/public/checkin/${tokenFor(reg, sessionA1)}`);
+    expect(post.status).toBe(410);
+    expect(post.body.error.code).toBe("CHECKIN_LINK_RETIRED");
+    const get = await request(app).get(`/api/public/checkin/${tokenFor(reg, sessionA1)}`);
+    expect(get.status).toBe(200);
     expect(await attendanceOf(reg)).toHaveLength(0);
   });
 });

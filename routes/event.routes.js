@@ -49,6 +49,13 @@ router.post(
   eventController.uploadEventImage,
 );
 
+// P5 audited timezone set/correction (see event.controller.setEventTimezone).
+router.put(
+  "/:id/timezone",
+  requireCrmUser,
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  eventController.setEventTimezone,
+);
 router.post(
   "/:id/sessions",
   requireCrmUser,
