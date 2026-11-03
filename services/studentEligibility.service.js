@@ -124,6 +124,32 @@ function crmStudentEligibility({ crmUserId, studentClaim, now = new Date() }) {
   };
 }
 
+/**
+ * Member-facing view of a registration's student claim (portal / self views). Only what the attendee
+ * needs: where the student price came from, the institution they declared, and the verification
+ * status. Never the verifier's user id, the verification method/time or the staff note (CRM-only).
+ * Exact shape: { source, institution, verification: { status } } or null.
+ */
+const MEMBER_FACING_STUDENT_SOURCES = new Set(["verified_membership", "declared_claim", "crm_assigned"]);
+function memberFacingStudentEligibility(eligibility) {
+  if (!eligibility || typeof eligibility !== "object") return null;
+  const source = MEMBER_FACING_STUDENT_SOURCES.has(eligibility.source) ? eligibility.source : null;
+  if (!source) return null;
+  return {
+    source,
+    institution: typeof eligibility.institution === "string" ? eligibility.institution : null,
+    verification: { status: eligibility.verification?.status ?? null },
+  };
+}
+
+/** Copy of a registration (lean object or mongoose document) with the member-facing claim view. */
+function withMemberFacingStudentEligibility(registration) {
+  if (!registration || typeof registration !== "object") return registration;
+  const plain = typeof registration.toObject === "function" ? registration.toObject() : { ...registration };
+  if (!Object.prototype.hasOwnProperty.call(plain, "studentEligibility")) return plain;
+  return { ...plain, studentEligibility: memberFacingStudentEligibility(plain.studentEligibility) };
+}
+
 module.exports = {
   STUDENT_TIER_KEYS,
   isStudentPriced,
@@ -132,4 +158,6 @@ module.exports = {
   normalizeInstitution,
   resolvePortalStudentEligibility,
   crmStudentEligibility,
+  memberFacingStudentEligibility,
+  withMemberFacingStudentEligibility,
 };
