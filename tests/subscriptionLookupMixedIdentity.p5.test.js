@@ -5,6 +5,7 @@
  * the caller may know about (CRM: ?profileId; PORTAL: own profile; anything else: non-member).
  */
 process.env.AUTH_BYPASS_ENABLED = "false";
+process.env.SUBSCRIPTION_SERVICE_URL = "http://subscription-service:4003";
 
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
@@ -55,7 +56,27 @@ const callerReq = {
 
 beforeEach(() => {
   axios.get.mockReset();
-  axios.get.mockResolvedValue({ data: { data: { membershipCategory: "general" } } });
+  // subscription-service's real envelope: { status, data: { data: <current subscription> } }, scoped to
+  // the requested profile and tenant.
+  axios.get.mockImplementation(async (url, opts) => {
+    const profileId = url.match(/\/profile\/([^/]+)\/current$/)[1];
+    return {
+      data: {
+        status: "success",
+        data: {
+          data: {
+            _id: "sub-1",
+            profileId,
+            tenantId: opts.headers["x-tenant-id"],
+            isCurrent: true,
+            subscriptionStatus: "Active",
+            endDate: "2999-12-31T23:59:59.000Z",
+            membershipCategory: "general",
+          },
+        },
+      },
+    };
+  });
   getCallerOwnProfile.mockReset();
 });
 
