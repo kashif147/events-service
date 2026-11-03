@@ -52,6 +52,16 @@ function bearer({ sub, tenantId = TENANT, userType, pdpDeny }) {
 const portalA = () => bearer({ sub: USER_A, userType: "PORTAL" });
 const crm = () => bearer({ sub: CRM_USER, userType: "CRM" });
 
+// Every tenant-A registration books the same event, so `session` is a session
+// of each one's own event (attendance routes validate session -> event).
+const EVENT_A = new mongoose.Types.ObjectId();
+
+// Attendance routes (checkin-qr, CRM/self attendance) need an eligible
+// (active, approved, confirmed) registration on the allowed path.
+async function makeEligible(reg) {
+  await Registration.updateOne({ _id: reg._id }, { $set: { status: "confirmed", approvalStatus: "approved" } });
+}
+
 let counter = 0;
 function makeRegistration(overrides = {}) {
   counter += 1;
@@ -59,7 +69,7 @@ function makeRegistration(overrides = {}) {
   return Registration.create({
     tenantId: TENANT,
     registrationType: "event",
-    eventId: new mongoose.Types.ObjectId(),
+    eventId: EVENT_A,
     attendeeSnapshot: { email, normalizedEmail: email },
     amount: 5000,
     currency: "eur",
@@ -87,7 +97,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   regA = await makeRegistration({ submittedByUserId: USER_A });
   regB = await makeRegistration({ submittedByUserId: USER_B });
-  regC = await makeRegistration({ tenantId: OTHER_TENANT, submittedByUserId: USER_C });
+  regC = await makeRegistration({ tenantId: OTHER_TENANT, eventId: new mongoose.Types.ObjectId(), submittedByUserId: USER_C });
   regCrmCreated = await makeRegistration({ submittedByUserId: null, registeredVia: "crm" });
   session = await EventSession.create({ tenantId: TENANT, eventId: regA.eventId, label: "Day 1", date: new Date() });
   sessionC = await EventSession.create({ tenantId: OTHER_TENANT, eventId: regC.eventId, label: "Day 1", date: new Date() });
@@ -252,6 +262,7 @@ describe("staff-only routes: CRM + permission allowed", () => {
   });
 
   it("PUT /:id/sessions/:sessionId/attendance", async () => {
+    await makeEligible(regB);
     const res = await request(app)
       .put(`/api/registrations/${regB._id}/sessions/${session._id}/attendance`)
       .set("Authorization", crm())
@@ -272,6 +283,7 @@ const dualRoutes = [
     name: "GET /:id/sessions/:sessionId/checkin-qr",
     method: "get",
     path: (id, sid) => `/api/registrations/${id}/sessions/${sid || session._id}/checkin-qr`,
+    attendance: true,
   },
 ];
 
@@ -283,6 +295,7 @@ describe.each(dualRoutes)("dual $name", (route) => {
   };
 
   it("PORTAL A on own registration -> 200", async () => {
+    if (route.attendance) await makeEligible(regA);
     const res = await send(portalA(), regA._id);
     expect(res.status).toBe(200);
   });
@@ -341,6 +354,7 @@ describe.each(dualRoutes)("dual $name", (route) => {
   });
 
   it("CRM + permission on any tenant registration -> 200", async () => {
+    if (route.attendance) await makeEligible(regB);
     const res = await send(crm(), regB._id);
     expect(res.status).toBe(200);
   });
@@ -400,7 +414,9 @@ describe("self-scoped routes unchanged", () => {
     expect(res.body.data.map((r) => String(r._id))).toEqual([String(regA._id)]);
   });
 
-  it("POST attendance/self: own -> 200, other member's -> 404", async () => {
+  it("POST attendance/self: own -> 200, other member's -> 403 NOT_OWNER", async () => {
+    await makeEligible(regA);
+    await makeEligible(regB);
     const own = await request(app)
       .post(`/api/registrations/${regA._id}/sessions/${session._id}/attendance/self`)
       .set("Authorization", portalA());
@@ -408,6 +424,8 @@ describe("self-scoped routes unchanged", () => {
     const other = await request(app)
       .post(`/api/registrations/${regB._id}/sessions/${session._id}/attendance/self`)
       .set("Authorization", portalA());
-    expect(other.status).toBe(404);
+    expect(other.status).toBe(403);
+    expect(other.body.code).toBe("NOT_OWNER");
+    expect((await Registration.findById(regB._id).lean()).sessionAttendance).toHaveLength(0);
   });
 });

@@ -24,11 +24,38 @@ once every session it's required to attend has actually happened.
    (`method:"manual-crm"`, can set *or overwrite* any prior entry for that session,
    including a Zoom/Teams auto-synced one). Attendee self-service outside the QR flow:
    `POST /registrations/:id/sessions/:sessionId/attendance/self`
-   (`method:"manual-attendee"`, ownership-checked against `submittedByUserId`, can only
-   mark `"attended"`, never `"absent"`).
+   (`method:"manual-attendee"`, **PORTAL-only** - `requirePortalUser`, CRM gets 403
+   `PORTAL_ONLY` and must use the CRM route so a staff action is stored as `manual-crm`
+   with `markedBy`, never as an attendee self-attestation; ownership-checked against
+   `submittedByUserId`, any miss is 403 `NOT_OWNER`; can only mark `"attended"`, never
+   `"absent"`; never overwrites an existing entry for the session).
 3. **Zoom/Teams auto-sync** (`method:"zoom"`/`"teams"`) — see below. **Never overwrites an
    existing `"manual-crm"` entry** (`services/onlineAttendanceSync.service.js` checks this
    explicitly) - a human correction always wins over a later auto-sync pass.
+
+## Structural checks (all write/credential paths)
+
+`services/attendanceEligibility.service.js` is the one place these live - use it for any
+new attendance path rather than re-deriving them:
+
+- both ids must be 24-hex ObjectIds -> 400 (`INVALID_REGISTRATION_ID`/`INVALID_SESSION_ID`),
+  never a CastError 500;
+- the session must be `{tenantId, eventId: registration.eventId, isDeleted != true}` - one
+  404 for missing/deleted/other-event/other-tenant (same filter as the completion rollup,
+  so `isActive:false` sessions stay markable);
+- course registrations have no sessions -> 409 `ATTENDANCE_NOT_SUPPORTED`;
+- attendee-side paths (self route, QR minting, QR redemption) additionally require
+  `isActive && approvalStatus:"approved" && status:"confirmed"` -> else 409
+  `REGISTRATION_NOT_ELIGIBLE` (also refuses post-rollup `attended`/`no-show`), and for
+  `event.allowPartialAttendance` with non-empty `registration.sessionIds` the session must
+  be one of them -> 403 `SESSION_NOT_SELECTED` (the rollup's exact predicate);
+- the CRM route checks only ids + course + session-belongs-to-event: staff corrections are
+  allowed in any registration state (e.g. fixing a no-show after the rollup).
+
+QR tokens are re-validated at redemption, not only at minting (a token minted before a
+cancellation does not write). **There is no attendance time window** (product decision
+pending); until one is agreed an eligible attendee can self-mark any of their own sessions
+at any time - an open certificate-integrity risk.
 
 ## Zoom/Teams online attendance — poll-only, no webhook
 
