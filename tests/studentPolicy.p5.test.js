@@ -433,3 +433,85 @@ describe("a capture outside approval never confirms an unverified claim", () => 
     expect(publishRegistrationConfirmed).not.toHaveBeenCalled();
   });
 });
+
+// P5 controlled integration: every events-service path that can approve or confirm a registration
+// (PUT /:id/approve -> registrationApproval.finalizeRegistrationApproval; payment.status listener
+// "succeeded" branch) refuses a pending OR rejected claim, and the non-approving mutation paths
+// (retry-payment, attendee update) can neither confirm the registration nor change the claim.
+// There is no bulk/admin/legacy approval path in events-service (only these two write
+// approvalStatus:"approved" / status:"confirmed"). Account-service direct capture is NOT covered here:
+// it remains an open bypass until payment S3.
+const rejectedClaim = () => ({
+  source: "declared_claim",
+  institution: "Example University",
+  declaredAt: new Date(),
+  verification: { status: "rejected" },
+});
+
+describe("pending/rejected claims cannot be approved through any events path", () => {
+  it("approve with a REJECTED claim still awaiting review -> 409 STUDENT_CLAIM_REJECTED, no capture, no GL, no profile write", async () => {
+    const reg = await makeRegistration({ studentEligibility: rejectedClaim() });
+    const res = await send("put", `/api/registrations/${reg._id}/approve`, crm());
+    expect(res.status).toBe(409);
+    expect(code(res)).toBe("STUDENT_CLAIM_REJECTED");
+    expect(capturePaymentIntent).not.toHaveBeenCalled();
+    expect(postManualRegistrationPaymentToGL).not.toHaveBeenCalled();
+    expect(findOrCreateAttendeeProfile).not.toHaveBeenCalled();
+    const fresh = await Registration.findById(reg._id).lean();
+    expect(fresh.status).toBe("pending");
+    expect(fresh.approvalStatus).toBe("pending_review");
+  });
+
+  it("payment succeeded event for a REJECTED claim -> registration stays pending, no confirm event", async () => {
+    const reg = await makeRegistration({ studentEligibility: rejectedClaim() });
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    await handlePaymentStatusUpdated(
+      { eventId: "evt-rej", tenantId: TENANT, data: { registrationId: String(reg._id), status: "succeeded", tenantId: TENANT } },
+      { headers: { "x-tenant-id": TENANT } },
+    );
+    warn.mockRestore();
+    const fresh = await Registration.findById(reg._id).lean();
+    expect(fresh.status).toBe("pending");
+    expect(publishRegistrationConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("retry-payment on a pending claim never captures or confirms; the claim stays pending", async () => {
+    const reg = await makeRegistration({ studentEligibility: pendingClaim() });
+    createRegistrationPaymentIntent.mockResolvedValue({ paymentId: "pay-retry", paymentIntentId: "pi_retry", status: "requires_capture" });
+    await send("post", `/api/registrations/${reg._id}/retry-payment`, crm(), { body: {} });
+    expect(capturePaymentIntent).not.toHaveBeenCalled();
+    expect(postManualRegistrationPaymentToGL).not.toHaveBeenCalled();
+    expect(publishRegistrationConfirmed).not.toHaveBeenCalled();
+    const fresh = await Registration.findById(reg._id).lean();
+    expect(fresh.status).toBe("pending");
+    expect(fresh.approvalStatus).toBe("pending_review");
+    expect(fresh.studentEligibility.verification.status).toBe("pending");
+  });
+
+  it("attendee update cannot verify the claim or confirm the registration via the body", async () => {
+    const reg = await makeRegistration({ studentEligibility: pendingClaim() });
+    await send("put", `/api/registrations/${reg._id}/attendee`, crm(), {
+      body: {
+        profile: { firstName: "Ann" },
+        status: "confirmed",
+        approvalStatus: "approved",
+        studentEligibility: { source: "verified_membership", verification: { status: "verified" } },
+      },
+    });
+    const fresh = await Registration.findById(reg._id).lean();
+    expect(fresh.status).toBe("pending");
+    expect(fresh.approvalStatus).toBe("pending_review");
+    expect(fresh.studentEligibility.source).toBe("declared_claim");
+    expect(fresh.studentEligibility.verification.status).toBe("pending");
+  });
+
+  it("after a pending approve attempt (409), a later approve once verified is the only way through", async () => {
+    const reg = await makeRegistration({ studentEligibility: pendingClaim() });
+    expect((await send("put", `/api/registrations/${reg._id}/approve`, crm())).status).toBe(409);
+    const verify = await send("put", `/api/registrations/${reg._id}/student-verification`, crm(), { body: { decision: "verify" } });
+    expect(verify.status).toBe(200);
+    const ok = await send("put", `/api/registrations/${reg._id}/approve`, crm());
+    expect(ok.status).toBe(200);
+    expect(capturePaymentIntent).toHaveBeenCalledTimes(1);
+  });
+});

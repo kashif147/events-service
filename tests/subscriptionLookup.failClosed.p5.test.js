@@ -13,6 +13,7 @@ const args = { profileId: "64c0000000000000000000f1", tenantId: "64c000000000000
 let errSpy;
 beforeEach(() => {
   jest.clearAllMocks();
+  process.env.SUBSCRIPTION_SERVICE_URL = "http://subscription-service:4003";
   errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => errSpy.mockRestore());
@@ -28,13 +29,34 @@ test.each([
 });
 
 test("successful lookup with no current subscription -> non-member", async () => {
-  axios.get.mockResolvedValue({ data: { data: null } });
+  // subscription-service's real envelope: { status, data: { data: <sub|null> } }
+  axios.get.mockResolvedValue({ data: { status: "success", data: { data: null } } });
   await expect(getActiveMembership(args)).resolves.toEqual({ isActiveMember: false, membershipCategory: null });
 });
 
 test("successful lookup with a current subscription -> member with its category", async () => {
-  axios.get.mockResolvedValue({ data: { data: { membershipCategory: "Undergraduate Student" } } });
+  axios.get.mockResolvedValue({
+    data: {
+      status: "success",
+      data: {
+        data: {
+          profileId: args.profileId,
+          tenantId: args.tenantId,
+          isCurrent: true,
+          subscriptionStatus: "Active",
+          endDate: "2999-12-31T23:59:59.000Z",
+          membershipCategory: "Undergraduate Student",
+        },
+      },
+    },
+  });
   await expect(getActiveMembership(args)).resolves.toEqual({ isActiveMember: true, membershipCategory: "Undergraduate Student" });
+});
+
+test("missing SUBSCRIPTION_SERVICE_URL -> 503 SUBSCRIPTION_SERVICE_URL_REQUIRED, no call", async () => {
+  delete process.env.SUBSCRIPTION_SERVICE_URL;
+  await expect(getActiveMembership(args)).rejects.toMatchObject({ status: 503, code: "SUBSCRIPTION_SERVICE_URL_REQUIRED" });
+  expect(axios.get).not.toHaveBeenCalled();
 });
 
 test("no profile to look up -> non-member without a call", async () => {
