@@ -111,6 +111,15 @@ const RegistrationSchema = new mongoose.Schema(
       enum: ["pending_review", "processing", "approved", "rejected"],
       default: "pending_review",
     },
+    // P5 bound payment commands: which decision holds the "processing" claim. Set in the SAME
+    // conditional update as approvalStatus -> processing (and unset on release), so the committed
+    // state always says whether money is being captured/posted (approve) or released (reject),
+    // instead of one ambiguous "processing" shared by both.
+    paymentDecision: {
+      action: { type: String, enum: ["approve", "reject"] },
+      actorUserId: String,
+      claimedAt: Date,
+    },
     // Duplicate-detection verdict recorded at intake (see createRegistration)
     // and (for POTENTIAL_MATCH) resolved by a CRM reviewer at approval time.
     // Mirrors the shape of profile-service's PersonalDetails.duplicateReview,
