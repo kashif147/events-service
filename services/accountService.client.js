@@ -45,7 +45,6 @@ function buildHeaders(req, tenantId) {
  * (contract 8.3: account S1 first, then flip the mode).
  */
 const TENANT_ID_RE = /^[a-f0-9]{24}$/i;
-const SERVICE_NAME = "events-service";
 
 function paymentCommandMode() {
   return String(process.env.ACCOUNT_PAYMENT_COMMAND_MODE || "legacy").trim().toLowerCase() === "bound"
@@ -95,7 +94,16 @@ function registrationPurpose(registrationType) {
  * command = { registrationId, registrationType, actorUserId, reason, paymentId? }.
  * Returns account's data, normalised so `status` keeps the meaning the call sites already read.
  */
-async function sendBoundCommand({ path, transition, req, tenantId, command, extra = {} }) {
+/**
+ * Canonical Idempotency-Key (contracts/p5-bound-payment-commands.v1.json):
+ * <domain>:<transition>:<objectId>:<paymentRef>, paymentRef = the PaymentIntent id for
+ * capture/cancel, the Payment id for manual_post/void, "new" for manual_record.
+ */
+function boundIdempotencyKey(transition, registrationId, paymentRef) {
+  return ["registration", transition, registrationId, paymentRef].join(":");
+}
+
+async function sendBoundCommand({ path, transition, req, tenantId, command, paymentRef, extra = {} }) {
   const registrationId = command?.registrationId ? String(command.registrationId) : "";
   const actorUserId = command?.actorUserId ? String(command.actorUserId) : "";
   if (!registrationId) {
@@ -106,7 +114,9 @@ async function sendBoundCommand({ path, transition, req, tenantId, command, extr
   const base = internalAccountBase();
   const headers = buildInternalCommandHeaders(req, tenantId);
   const paymentId = command.paymentId ? String(command.paymentId) : null;
-  if (paymentId) headers["Idempotency-Key"] = `${SERVICE_NAME}:${transition}:${registrationId}:${paymentId}`;
+  const ref = paymentRef ? String(paymentRef) : "";
+  if (!ref) throw new AppError("A payment reference is required for a payment command.", 400, "PAYMENT_BINDING_REQUIRED");
+  headers["Idempotency-Key"] = boundIdempotencyKey(transition, registrationId, ref);
 
   const body = {
     binding: {
@@ -222,6 +232,7 @@ async function postManualRegistrationPayment({
       req,
       tenantId,
       command: { ...command, registrationId, paymentId: null },
+      paymentRef: "new",
       extra: {
         record: {
           amount,
@@ -268,6 +279,7 @@ async function capturePaymentIntent({ req, tenantId, paymentIntentId, profileId,
       req,
       tenantId,
       command,
+      paymentRef: paymentIntentId,
       extra: linkOf(profileId, membershipNumber),
     });
   }
@@ -294,6 +306,7 @@ async function cancelPaymentIntent({ req, tenantId, paymentIntentId, command = n
       req,
       tenantId,
       command,
+      paymentRef: paymentIntentId,
     });
   }
   const response = await axios.post(
@@ -360,6 +373,7 @@ async function postManualRegistrationPaymentToGL({ req, tenantId, paymentId, met
       req,
       tenantId,
       command: { ...command, paymentId },
+      paymentRef: paymentId,
       extra: linkOf(profileId, membershipNumber),
     });
   }
@@ -389,6 +403,7 @@ async function voidManualRegistrationPayment({ req, tenantId, paymentId, command
       req,
       tenantId,
       command: { ...command, paymentId },
+      paymentRef: paymentId,
     });
   }
   const response = await axios.post(
@@ -409,4 +424,5 @@ module.exports = {
   postManualRegistrationPaymentToGL,
   voidManualRegistrationPayment,
   paymentCommandMode,
+  boundIdempotencyKey,
 };

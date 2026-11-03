@@ -131,7 +131,7 @@ describe("client: bound command envelope and headers", () => {
     expect(url).toBe("http://account-service:4000/api/payments/intents/pi_1/capture");
     expectInternalOnly(cfg.headers);
     expect(cfg.headers["x-correlation-id"]).toBe("corr-1");
-    expect(cfg.headers["Idempotency-Key"]).toBe("events-service:capture:r1:p1");
+    expect(cfg.headers["Idempotency-Key"]).toBe("registration:capture:r1:pi_1"); // canonical contract key
     expect(body).toEqual({
       binding: { domain: "registration", registrationId: "r1", purpose: "eventRegistration", paymentId: "p1" },
       transition: "capture",
@@ -168,7 +168,7 @@ describe("client: bound command envelope and headers", () => {
     const [url, body, cfg] = post.mock.calls[0];
     expect(url).toBe("http://account-service:4000/api/journal/events/manual-payment");
     expectInternalOnly(cfg.headers);
-    expect(cfg.headers).not.toHaveProperty("Idempotency-Key");
+    expect(cfg.headers["Idempotency-Key"]).toBe("registration:manual_record:r9:new"); // canonical contract key
     expect(body).toEqual({
       binding: { domain: "registration", registrationId: "r9", purpose: "courseRegistration" },
       transition: "manual_record",
