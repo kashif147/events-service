@@ -208,15 +208,17 @@ describe("PORTAL create: student tiers are server-checked", () => {
     expect(createRegistrationPaymentIntent).not.toHaveBeenCalled();
   });
 
-  it("STUDENT for more than the caller's own seat -> 400 STUDENT_SINGLE_SEAT", async () => {
+  it("no seat limit: non-member STUDENT x2 with a claim -> 201, claim pending (no documented single-seat rule)", async () => {
     const res = await send("post", "/api/registrations", portal(), {
       body: createBody({
         lineItems: [{ tierKey: "STUDENT", quantity: 2 }],
         studentClaim: { institution: "Example University" },
       }),
     });
-    expect(res.status).toBe(400);
-    expect(code(res)).toBe("STUDENT_SINGLE_SEAT");
+    expect(res.status).toBe(201);
+    const row = await Registration.findById(res.body.data.registration._id).lean();
+    expect(row.studentEligibility.source).toBe("declared_claim");
+    expect(row.studentEligibility.verification.status).toBe("pending");
   });
 
   it("active non-student member choosing STUDENT -> 400 TIER_NOT_ELIGIBLE (unchanged)", async () => {

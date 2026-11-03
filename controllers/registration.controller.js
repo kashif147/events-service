@@ -477,15 +477,15 @@ async function createRegistration(req, res, next) {
             })
           : "standard";
         if (isPortalCaller) {
-          // Auto-derived student pricing (verified undergraduate-student
-          // membership) covers the caller's own seat only; GROUP_STUDENT is
-          // CRM-only. Anything else falls back to standard pricing.
-          if (seatPriceCategory === "group_student" || (seatPriceCategory === "student" && seatQuantity !== 1)) {
+          // Auto-derived pricing: GROUP_STUDENT is CRM-only, so a derived
+          // group_student falls back to standard; derived student pricing is
+          // backed by the verified undergraduate-student membership.
+          if (seatPriceCategory === "group_student") {
             seatPriceCategory = "standard";
           }
           if (seatPriceCategory === "student") {
             studentEligibility = resolvePortalStudentEligibility({
-              tierLines: [{ tierKey: "STUDENT", quantity: 1 }],
+              tierLines: [{ tierKey: "STUDENT", quantity: seatQuantity }],
               isActiveMember,
               membershipCategory,
             });

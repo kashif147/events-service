@@ -83,14 +83,6 @@ function resolvePortalStudentEligibility({ tierLines, isActiveMember, membership
   }
   const studentLines = lines.filter((line) => line.tierKey === "STUDENT");
   if (!studentLines.length) return null;
-  // The membership or the declaration covers the caller only - never extra seats.
-  if (studentLines.reduce((sum, line) => sum + (line.quantity || 0), 0) !== 1) {
-    throw new AppError(
-      "Student pricing applies to your own seat only (one STUDENT ticket per registration).",
-      400,
-      "STUDENT_SINGLE_SEAT",
-    );
-  }
   if (isActiveMember && isUndergraduateStudentCategory(membershipCategory)) {
     return {
       source: "verified_membership",
