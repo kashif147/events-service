@@ -319,3 +319,90 @@ describe("A13 payment.status.listener matches the registration's own payment", (
     expect((await Registration.findById(reg._id).lean()).paymentStatus).toBe("pending");
   });
 });
+
+// ---------------------------------------------------------------- P5 batch 5: one binding per registration
+describe("B registration payment binding is set once; replacement is one conditional transition", () => {
+  const { voidManualRegistrationPayment } = require("../services/accountService.client.js");
+  async function pendingStripeReg(overrides = {}) {
+    counter += 1;
+    return Registration.create({
+      tenantId: TENANT,
+      registrationType: "event",
+      eventId: event._id,
+      approvalStatus: "pending_review",
+      attendeeSnapshot: { email: `b-${counter}@example.test`, normalizedEmail: `b-${counter}@example.test` },
+      amount: 8000,
+      currency: "eur",
+      paymentMethod: "stripe",
+      paymentStatus: "pending",
+      status: "pending",
+      paymentId: "pay-old",
+      stripePaymentIntentId: "pi_old",
+      registeredVia: "crm",
+      ...overrides,
+    });
+  }
+  const retry = (id) => request(app).post(`/api/registrations/${id}/retry-payment`).set("Authorization", crm()).send({});
+
+  it("B1 two concurrent CRM retries that get DIFFERENT intents: one 200, one 409; one binding survives", async () => {
+    const reg = await pendingStripeReg();
+    let n = 0;
+    createRegistrationPaymentIntent.mockImplementation(async () => {
+      n += 1;
+      const k = n;
+      await new Promise((r) => setTimeout(r, 5));
+      return { id: `pay-new-${k}`, paymentIntentId: `pi_new_${k}`, clientSecret: `pi_new_${k}_secret`, status: "requires_action" };
+    });
+    const rs = await Promise.all([retry(reg._id), retry(reg._id)]);
+    expect(rs.map((r) => r.status).sort()).toEqual([200, 409]);
+    const loser = rs.find((r) => r.status === 409);
+    expect(loser.body.error?.code || loser.body.code).toBe("REGISTRATION_PAYMENT_CHANGED");
+    expect(JSON.stringify(loser.body)).not.toMatch(/_secret/);
+    const winner = rs.find((r) => r.status === 200);
+    const after = await Registration.findById(reg._id).lean();
+    expect(after.stripePaymentIntentId).toBe(winner.body.data.paymentIntentId);
+    expect(after.paymentId).toBe(winner.body.data.paymentIntentId.replace("pi_new_", "pay-new-"));
+  });
+
+  it("B2 concurrent retries that get the SAME reused intent are idempotent (both 200)", async () => {
+    const reg = await pendingStripeReg();
+    createRegistrationPaymentIntent.mockResolvedValue({ id: "pay-r", paymentIntentId: "pi_r", clientSecret: "pi_r_secret", status: "requires_action" });
+    const rs = await Promise.all([retry(reg._id), retry(reg._id)]);
+    expect(rs.map((r) => r.status)).toEqual([200, 200]);
+    const after = await Registration.findById(reg._id).lean();
+    expect([after.paymentId, after.stripePaymentIntentId]).toEqual(["pay-r", "pi_r"]);
+  });
+
+  it("B3 binding changed between read and write -> 409, nothing overwritten, superseded manual payment NOT voided", async () => {
+    const reg = await pendingStripeReg({ paymentMethod: "manual", paymentId: "manual-1", stripePaymentIntentId: null });
+    createRegistrationPaymentIntent.mockImplementation(async () => {
+      await Registration.updateOne({ _id: reg._id }, { $set: { paymentId: "pay-concurrent", stripePaymentIntentId: "pi_concurrent" } });
+      return { id: "pay-mine", paymentIntentId: "pi_mine", clientSecret: "pi_mine_secret", status: "requires_action" };
+    });
+    const r = await retry(reg._id);
+    expect(r.status).toBe(409);
+    expect(voidManualRegistrationPayment).not.toHaveBeenCalled();
+    const after = await Registration.findById(reg._id).lean();
+    expect([after.paymentId, after.stripePaymentIntentId]).toEqual(["pay-concurrent", "pi_concurrent"]);
+  });
+
+  it("B4 account refuses a replacement while the holder holds funds (409 REGISTRATION_PAYMENT_HELD) -> 409, registration unchanged", async () => {
+    const reg = await pendingStripeReg({ paymentStatus: "authorized" });
+    createRegistrationPaymentIntent.mockRejectedValue(upstreamError(409, "REGISTRATION_PAYMENT_HELD"));
+    const r = await retry(reg._id);
+    expect(r.status).toBe(409);
+    const after = await Registration.findById(reg._id).lean();
+    expect([after.paymentId, after.stripePaymentIntentId, after.paymentStatus]).toEqual(["pay-old", "pi_old", "authorized"]);
+  });
+
+  it("B5 createRegistration never overwrites a binding that appeared concurrently -> 409, registration rolled back", async () => {
+    getPaymentByPaymentIntentId.mockResolvedValue(ownPayment());
+    attachRegistrationToPaymentIntent.mockImplementation(async ({ registrationId }) => {
+      await Registration.updateOne({ _id: registrationId }, { $set: { paymentId: "pay-someone-else" } });
+      return { ok: true, paymentId: "pay-own-1", registrationId, status: "requires_capture" };
+    });
+    const res = await post(portalA(), body({ stripePaymentIntentId: "pi_own_1" }));
+    expect(res.status).toBe(409);
+    expect(await Registration.countDocuments({ tenantId: TENANT })).toBe(0);
+  });
+});

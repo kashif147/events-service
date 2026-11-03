@@ -183,6 +183,28 @@ async function resolveProductMetadata({ tenantId, registrationType, eventId, cou
   return { productCode: event?.productCode || null, eventCategoryCode: event?.eventCategoryLookupCode || null };
 }
 
+/**
+ * P5 payer binding: binds the account-service Payment to a registration ONCE. The
+ * registration's paymentId / stripePaymentIntentId are set by a conditional update that only
+ * matches an unbound registration (or one already bound to this same payment -> idempotent),
+ * so a registration can never acquire a second, conflicting payment binding here. The
+ * cross-service guarantee (one active binding per registration) is account-service's
+ * registrationBinding unique index; this is the events-side half of the same rule.
+ */
+async function bindRegistrationPaymentOnce(registration, tenantId, set) {
+  const unbound = [{ paymentId: null }, { paymentId: { $exists: false } }];
+  const same = set.paymentId ? [{ paymentId: set.paymentId }] : [];
+  const updated = await Registration.findOneAndUpdate(
+    { _id: registration._id, tenantId, $or: [...unbound, ...same] },
+    { $set: set },
+    { new: true },
+  );
+  if (!updated) {
+    throw new AppError("This registration already has a payment", 409, "REGISTRATION_ALREADY_HAS_PAYMENT");
+  }
+  return updated;
+}
+
 async function createRegistration(req, res, next) {
   try {
     const { tenantId } = req.ctx;
@@ -601,15 +623,14 @@ async function createRegistration(req, res, next) {
           productCode,
           eventCategoryCode,
         });
-        registration.paymentId = attached?.paymentId || existingPayment._id || null;
-        registration.stripePaymentIntentId = stripePaymentIntentId;
         // requires_capture (authorized) is the expected live state here,
         // mirroring what the requires_capture webhook branch already sets
         // for the legacy (events-service-created-intent) flow.
-        if (attached?.status === "requires_capture") {
-          registration.paymentStatus = "authorized";
-        }
-        await registration.save();
+        registration = await bindRegistrationPaymentOnce(registration, tenantId, {
+          paymentId: String(attached?.paymentId || existingPayment._id || "") || null,
+          stripePaymentIntentId,
+          ...(attached?.status === "requires_capture" ? { paymentStatus: "authorized" } : {}),
+        });
         await publishRegistrationCreated(registration, tenantId);
       } else if (method === "stripe" && isPortalCaller) {
         // P5 payer binding: a PORTAL caller's intent can't carry a registrationId
@@ -644,9 +665,10 @@ async function createRegistration(req, res, next) {
           productCode,
           eventCategoryCode,
         });
-        registration.paymentId = attached?.paymentId || intent?.id || null;
-        registration.stripePaymentIntentId = intent?.paymentIntentId || null;
-        await registration.save();
+        registration = await bindRegistrationPaymentOnce(registration, tenantId, {
+          paymentId: String(attached?.paymentId || intent?.id || "") || null,
+          stripePaymentIntentId: intent?.paymentIntentId || null,
+        });
         paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
         await publishRegistrationCreated(registration, tenantId);
       } else if (method === "stripe") {
@@ -663,9 +685,10 @@ async function createRegistration(req, res, next) {
           purpose: registrationType === "course" ? "courseRegistration" : "eventRegistration",
         });
         // account-service's createIntent names the Payment id "id" (see retry-payment).
-        registration.paymentId = intent?.id || intent?.paymentId || null;
-        registration.stripePaymentIntentId = intent?.paymentIntentId || null;
-        await registration.save();
+        registration = await bindRegistrationPaymentOnce(registration, tenantId, {
+          paymentId: String(intent?.id || intent?.paymentId || "") || null,
+          stripePaymentIntentId: intent?.paymentIntentId || null,
+        });
         paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
         await publishRegistrationCreated(registration, tenantId);
       } else {
@@ -681,8 +704,9 @@ async function createRegistration(req, res, next) {
           currency,
           method,
         });
-        registration.paymentId = manual?.paymentId || null;
-        await registration.save();
+        registration = await bindRegistrationPaymentOnce(registration, tenantId, {
+          paymentId: manual?.paymentId ? String(manual.paymentId) : null,
+        });
         await publishRegistrationCreated(registration, tenantId);
         // No publishRegistrationConfirmed here - manual/comp/invoice payments
         // are recorded (not posted) at intake; confirmation only ever happens
@@ -1282,7 +1306,52 @@ async function retryRegistrationPayment(req, res, next) {
       purpose: registration.registrationType === "course" ? "courseRegistration" : "eventRegistration",
     });
 
+    // P5 payer binding: the replacement is a single conditional transition from the
+    // binding this request read (previous paymentId + PaymentIntent) to the one
+    // account-service returned (which already enforced one active binding per registration).
+    // A concurrent retry/attach that changed the binding in between makes this a 409
+    // instead of silently overwriting it; repeating the same transition is idempotent.
+    const previousIntentId = registration.stripePaymentIntentId || null;
+    const set = {};
+    if (switchingFromManual) set.paymentMethod = "stripe";
+    if (intent?.paymentIntentId && intent.paymentIntentId !== previousIntentId) {
+      set.stripePaymentIntentId = intent.paymentIntentId;
+      // account-service's createIntent response names the Payment document
+      // id "id" (see payments.service.js's buildIntentResponse and its
+      // fresh-create return), not "paymentId" - accountService.client.js
+      // passes that response through unchanged.
+      set.paymentId = intent.id ? String(intent.id) : registration.paymentId;
+    }
+    // account-service's domain status is "requires_capture" once Stripe has
+    // authorized the funds (mirrors payment.status.listener.js's mapping) -
+    // never downgrade an already-authorized/succeeded registration here.
+    if (intent?.status === "requires_capture") {
+      set.paymentStatus = "authorized";
+    } else if (!["authorized", "succeeded"].includes(registration.paymentStatus)) {
+      set.paymentStatus = "pending";
+    }
+    const fromBinding = { paymentId: previousPaymentId ?? null, stripePaymentIntentId: previousIntentId };
+    const toBinding = set.stripePaymentIntentId
+      ? { paymentId: set.paymentId ?? null, stripePaymentIntentId: set.stripePaymentIntentId }
+      : fromBinding;
+    const replaced = await Registration.findOneAndUpdate(
+      { _id: registration._id, tenantId, approvalStatus: "pending_review", $or: [fromBinding, toBinding] },
+      { $set: set },
+      { new: true },
+    );
+    if (!replaced) {
+      return next(
+        new AppError(
+          "This registration's payment changed while retrying - reload and try again.",
+          409,
+          "REGISTRATION_PAYMENT_CHANGED",
+        ),
+      );
+    }
+    Object.assign(registration, { paymentStatus: replaced.paymentStatus, paymentMethod: replaced.paymentMethod });
+
     if (switchingFromManual) {
+      // (Only after the binding transition above succeeded - a lost race voids nothing.)
       // Void the superseded manual/comp/invoice Payment now that a real
       // PaymentIntent has been created to replace it. Best-effort: a failure
       // here must never undo the PaymentIntent creation that already
@@ -1298,26 +1367,8 @@ async function retryRegistrationPayment(req, res, next) {
           );
         });
       }
-      registration.paymentMethod = "stripe";
     }
 
-    if (intent?.paymentIntentId && intent.paymentIntentId !== registration.stripePaymentIntentId) {
-      registration.stripePaymentIntentId = intent.paymentIntentId;
-      // account-service's createIntent response names the Payment document
-      // id "id" (see payments.service.js's buildIntentResponse and its
-      // fresh-create return), not "paymentId" - accountService.client.js
-      // passes that response through unchanged.
-      registration.paymentId = intent.id || registration.paymentId;
-    }
-    // account-service's domain status is "requires_capture" once Stripe has
-    // authorized the funds (mirrors payment.status.listener.js's mapping) -
-    // never downgrade an already-authorized/succeeded registration here.
-    if (intent?.status === "requires_capture") {
-      registration.paymentStatus = "authorized";
-    } else if (!["authorized", "succeeded"].includes(registration.paymentStatus)) {
-      registration.paymentStatus = "pending";
-    }
-    await registration.save();
 
     return res.status(200).json({
       success: true,

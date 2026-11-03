@@ -115,6 +115,17 @@ live portal sends `purpose: "eventRegistration"` (and `metadata.eventId`) for co
 portal course Stripe registrations fail the purpose check - there is no purpose mapping in
 code to fix this server-side; it needs a portal change (`courseRegistration` + `courseId`).
 
+One payment binding per registration (P5 batch 5): `Registration.paymentId` /
+`stripePaymentIntentId` are written by `bindRegistrationPaymentOnce` (conditional update that
+only matches an unbound registration, or one already bound to the same payment) at creation, so
+a binding that appeared concurrently is a 409 + rollback, never an overwrite. retry-payment is
+the only replacement path: a single conditional transition from the binding it read to the one
+account-service returned (account-service itself allows one active binding per registration -
+`Payment.registrationBinding`); a concurrent change -> 409 `REGISTRATION_PAYMENT_CHANGED`, and
+the superseded manual payment is voided only after the transition succeeded. The portal
+submits all registrations as `registrationType: "event"`, so its intents are correctly
+`eventRegistration` (portal PR #41 makes that one explicit shared mapping).
+
 Either way, capture only ever happens at approval (`finalizeRegistrationApproval` →
 `capturePaymentIntent`); cancel only ever happens at rejection (`cancelPaymentIntent`).
 
