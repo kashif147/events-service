@@ -1,4 +1,5 @@
 const axios = require("axios");
+const { AppError } = require("../errors/AppError.js");
 
 const SUBSCRIPTION_SERVICE_URL =
   process.env.SUBSCRIPTION_SERVICE_URL ||
@@ -26,6 +27,9 @@ function buildHeaders(req, tenantId) {
  * Whether a profile currently has an ACTIVE subscription (isCurrent + status
  * "Active"), and its membershipCategory if so. Any other state - lapsed,
  * cancelled, resigned, or no subscription at all - resolves to non-member.
+ * A FAILED lookup (network error, timeout, non-2xx) is never treated as
+ * non-member: it throws a 503 MEMBERSHIP_LOOKUP_FAILED so no registration is
+ * priced or created on an unknown membership state (P5 STUDENT policy).
  */
 async function getActiveMembership({ profileId, tenantId, req }) {
   if (!profileId) return { isActiveMember: false, membershipCategory: null };
@@ -43,7 +47,11 @@ async function getActiveMembership({ profileId, tenantId, req }) {
     };
   } catch (error) {
     console.error("[subscriptionLookup] getActiveMembership failed:", error.message);
-    return { isActiveMember: false, membershipCategory: null };
+    throw new AppError(
+      "Unable to verify membership right now. Please try again.",
+      503,
+      "MEMBERSHIP_LOOKUP_FAILED",
+    );
   }
 }
 

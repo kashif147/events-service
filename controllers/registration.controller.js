@@ -19,6 +19,11 @@ const {
   updateAttendeeProfileFields,
 } = require("../services/profileLookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
+const {
+  isStudentPriced,
+  resolvePortalStudentEligibility,
+  crmStudentEligibility,
+} = require("../services/studentEligibility.service.js");
 const { resolveLookupNamesByIds } = require("../services/lookup.client.js");
 const {
   determinePriceCategory,
@@ -202,6 +207,10 @@ async function createRegistration(req, res, next) {
       // rather than create a second, separate PaymentIntent for a payment
       // the payer already confirmed - see the stripe branch below.
       stripePaymentIntentId,
+      // PORTAL STUDENT tier without a verified student membership:
+      // { institution } - recorded as a claim a CRM user must verify before
+      // approval/capture (services/studentEligibility.service.js).
+      studentClaim,
     } = req.body || {};
 
     if (!registrationType || !["event", "course"].includes(registrationType)) {
@@ -432,6 +441,7 @@ async function createRegistration(req, res, next) {
       let eventCategoryCode;
       let priceBreakdown = [];
       let seatPriceCategory;
+      let studentEligibility = null;
       if (hasLineItems) {
         if (isPortalCaller) {
           for (const line of lineItems) {
@@ -442,6 +452,12 @@ async function createRegistration(req, res, next) {
             });
             if (reason) throw new AppError(reason, 400, "TIER_NOT_ELIGIBLE");
           }
+          studentEligibility = resolvePortalStudentEligibility({
+            tierLines: lineItems,
+            isActiveMember,
+            membershipCategory,
+            studentClaim,
+          });
         }
         const resolved = await resolveLineItemsAmount({ tenantId, eventId, lineItems });
         amount = resolved.amount;
@@ -460,6 +476,21 @@ async function createRegistration(req, res, next) {
               entity: event,
             })
           : "standard";
+        if (isPortalCaller) {
+          // Auto-derived student pricing (verified undergraduate-student
+          // membership) covers the caller's own seat only; GROUP_STUDENT is
+          // CRM-only. Anything else falls back to standard pricing.
+          if (seatPriceCategory === "group_student" || (seatPriceCategory === "student" && seatQuantity !== 1)) {
+            seatPriceCategory = "standard";
+          }
+          if (seatPriceCategory === "student") {
+            studentEligibility = resolvePortalStudentEligibility({
+              tierLines: [{ tierKey: "STUDENT", quantity: 1 }],
+              isActiveMember,
+              membershipCategory,
+            });
+          }
+        }
         const resolved = await resolveAmount({
           tenantId,
           registrationType,
@@ -474,6 +505,10 @@ async function createRegistration(req, res, next) {
         currency = resolved.currency;
         productCode = resolved.productCode;
         eventCategoryCode = resolved.eventCategoryCode;
+      }
+
+      if (!isPortalCaller && isStudentPriced({ priceCategory: seatPriceCategory, priceBreakdown })) {
+        studentEligibility = crmStudentEligibility({ crmUserId: caller.userId, studentClaim });
       }
 
       // Every registration starts pending_review now, regardless of payment
@@ -493,6 +528,7 @@ async function createRegistration(req, res, next) {
         quantity: seatQuantity,
         priceCategory: seatPriceCategory,
         priceBreakdown,
+        studentEligibility,
         profileId: null,
         membershipNumber: candidateMembershipNumber,
         isMemberAtRegistration: isActiveMember,
