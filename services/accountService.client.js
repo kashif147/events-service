@@ -1,4 +1,5 @@
 const axios = require("axios");
+const { AppError } = require("../errors/AppError.js");
 
 const ACCOUNT_SERVICE_URL =
   process.env.ACCOUNT_SERVICE_URL ||
@@ -32,6 +33,113 @@ function buildHeaders(req, tenantId) {
   if (correlationId) headers["x-correlation-id"] = String(correlationId);
 
   return headers;
+}
+
+/**
+ * P5 bound payment commands (S2, b5 payment-mutation contract section 3).
+ * `ACCOUNT_PAYMENT_COMMAND_MODE=bound` sends capture / cancel / manual record / manual post /
+ * manual void as the bound internal command: internal-only headers (never authorization,
+ * x-jwt-verified, x-auth-source or x-user-*), a body naming the registration and the transition,
+ * actorUserId as audit metadata only, and a deterministic Idempotency-Key. Default `legacy` sends
+ * exactly today's requests, so events can deploy before account-service understands the command
+ * (contract 8.3: account S1 first, then flip the mode).
+ */
+const TENANT_ID_RE = /^[a-f0-9]{24}$/i;
+const SERVICE_NAME = "events-service";
+
+function paymentCommandMode() {
+  return String(process.env.ACCOUNT_PAYMENT_COMMAND_MODE || "legacy").trim().toLowerCase() === "bound"
+    ? "bound"
+    : "legacy";
+}
+
+/** Gateway URLs strip x-internal-request, so the bound command must use the in-network host. */
+function internalAccountBase() {
+  let host = null;
+  try {
+    const u = new URL(process.env.ACCOUNT_SERVICE_URL);
+    if (u.protocol === "http:" || u.protocol === "https:") host = u.hostname;
+  } catch {
+    host = null;
+  }
+  if (!host || (host.includes(".") && host !== "127.0.0.1")) {
+    throw new AppError(
+      "Account service is not configured for internal payment commands.",
+      503,
+      "ACCOUNT_INTERNAL_URL_REQUIRED",
+    );
+  }
+  return process.env.ACCOUNT_SERVICE_URL.replace(/\/$/, "");
+}
+
+function buildInternalCommandHeaders(req, tenantId) {
+  const tenant = tenantId ? String(tenantId) : "";
+  if (!TENANT_ID_RE.test(tenant)) {
+    throw new AppError("A verified tenant is required for a payment command.", 400, "TENANT_REQUIRED");
+  }
+  const headers = {
+    "Content-Type": "application/json",
+    "x-internal-request": "true",
+    "x-tenant-id": tenant,
+  };
+  const correlationId = req?.correlationId || req?.headers?.["x-correlation-id"];
+  if (correlationId) headers["x-correlation-id"] = String(correlationId);
+  return headers;
+}
+
+function registrationPurpose(registrationType) {
+  return registrationType === "course" ? "courseRegistration" : "eventRegistration";
+}
+
+/**
+ * command = { registrationId, registrationType, actorUserId, reason, paymentId? }.
+ * Returns account's data, normalised so `status` keeps the meaning the call sites already read.
+ */
+async function sendBoundCommand({ path, transition, req, tenantId, command, extra = {} }) {
+  const registrationId = command?.registrationId ? String(command.registrationId) : "";
+  const actorUserId = command?.actorUserId ? String(command.actorUserId) : "";
+  if (!registrationId) {
+    throw new AppError("registrationId is required for a payment command.", 400, "PAYMENT_BINDING_REQUIRED");
+  }
+  if (!actorUserId) throw new AppError("A verified actor is required for a payment command.", 400, "ACTOR_REQUIRED");
+  if (!command?.reason) throw new AppError("A reason is required for a payment command.", 400, "REASON_REQUIRED");
+  const base = internalAccountBase();
+  const headers = buildInternalCommandHeaders(req, tenantId);
+  const paymentId = command.paymentId ? String(command.paymentId) : null;
+  if (paymentId) headers["Idempotency-Key"] = `${SERVICE_NAME}:${transition}:${registrationId}:${paymentId}`;
+
+  const body = {
+    binding: {
+      domain: "registration",
+      registrationId,
+      purpose: registrationPurpose(command.registrationType),
+      ...(paymentId ? { paymentId } : {}),
+    },
+    transition,
+    reason: command.reason,
+    actorUserId,
+    ...extra,
+  };
+  let response;
+  try {
+    response = await axios.post(`${base}${path}`, body, { headers, timeout: 15000 });
+  } catch (error) {
+    if (error?.response && error.response.status < 500) throw error; // 4xx: appErrorFromUpstream maps it
+    // Network failure / 5xx: account state unknown - callers keep their own state unchanged.
+    throw new AppError(`Payment ${transition} unavailable. Nothing was recorded; retry the action.`, 503, "ACCOUNT_UNAVAILABLE");
+  }
+  const data = { ...(response.data?.data || {}) };
+  if (!data.status) {
+    if (transition === "capture" && (data.captured || data.alreadyCaptured)) data.status = "succeeded";
+    if (transition === "cancel" && (data.canceled || data.alreadyCanceled)) data.status = "canceled";
+  }
+  if (transition === "manual_record" && !data.paymentId && data.id) data.paymentId = data.id;
+  return data;
+}
+
+function linkOf(profileId, membershipNumber) {
+  if (!profileId) return {};
+  return { link: { profileId: String(profileId), ...(membershipNumber ? { memberId: String(membershipNumber) } : {}) } };
 }
 
 /**
@@ -105,7 +213,27 @@ async function postManualRegistrationPayment({
   amount,
   currency,
   method, // "comp" | "manual" | "invoice"
+  command = null,
 }) {
+  if (paymentCommandMode() === "bound") {
+    return sendBoundCommand({
+      path: "/api/journal/events/manual-payment",
+      transition: "manual_record",
+      req,
+      tenantId,
+      command: { ...command, registrationId, paymentId: null },
+      extra: {
+        record: {
+          amount,
+          currency,
+          method,
+          ...(productCode ? { productCode } : {}),
+          ...(eventCategoryCode ? { eventCategoryCode } : {}),
+        },
+        ...linkOf(profileId, membershipNumber),
+      },
+    });
+  }
   const response = await axios.post(
     `${ACCOUNT_SERVICE_URL}/api/journal/events/manual-payment`,
     {
@@ -132,7 +260,17 @@ async function postManualRegistrationPayment({
  * (via account-service's capturePaymentIntent linkFields) so the resulting
  * GL entry is correctly attributed to the just-resolved attendee Profile.
  */
-async function capturePaymentIntent({ req, tenantId, paymentIntentId, profileId, membershipNumber }) {
+async function capturePaymentIntent({ req, tenantId, paymentIntentId, profileId, membershipNumber, command = null }) {
+  if (paymentCommandMode() === "bound") {
+    return sendBoundCommand({
+      path: `/api/payments/intents/${encodeURIComponent(paymentIntentId)}/capture`,
+      transition: "capture",
+      req,
+      tenantId,
+      command,
+      extra: linkOf(profileId, membershipNumber),
+    });
+  }
   const response = await axios.post(
     `${ACCOUNT_SERVICE_URL}/api/payments/intents/${paymentIntentId}/capture`,
     {
@@ -148,7 +286,16 @@ async function capturePaymentIntent({ req, tenantId, paymentIntentId, profileId,
  * Cancels (releases the hold on) a previously-authorized Stripe
  * PaymentIntent, on CRM rejection - no refund, since nothing was captured.
  */
-async function cancelPaymentIntent({ req, tenantId, paymentIntentId }) {
+async function cancelPaymentIntent({ req, tenantId, paymentIntentId, command = null }) {
+  if (paymentCommandMode() === "bound") {
+    return sendBoundCommand({
+      path: `/api/payments/intents/${encodeURIComponent(paymentIntentId)}/cancel`,
+      transition: "cancel",
+      req,
+      tenantId,
+      command,
+    });
+  }
   const response = await axios.post(
     `${ACCOUNT_SERVICE_URL}/api/payments/intents/${paymentIntentId}/cancel`,
     {},
@@ -205,7 +352,17 @@ async function attachRegistrationToPaymentIntent({
  * Posts a previously-recorded (deferPosting) manual/comp/invoice event
  * payment to the GL, at CRM approval time, once profileId is resolved.
  */
-async function postManualRegistrationPaymentToGL({ req, tenantId, paymentId, method, profileId, membershipNumber }) {
+async function postManualRegistrationPaymentToGL({ req, tenantId, paymentId, method, profileId, membershipNumber, command = null }) {
+  if (paymentCommandMode() === "bound") {
+    return sendBoundCommand({
+      path: "/api/journal/events/manual-payment/post",
+      transition: "manual_post",
+      req,
+      tenantId,
+      command: { ...command, paymentId },
+      extra: linkOf(profileId, membershipNumber),
+    });
+  }
   const response = await axios.post(
     `${ACCOUNT_SERVICE_URL}/api/journal/events/manual-payment/post`,
     {
@@ -224,7 +381,16 @@ async function postManualRegistrationPaymentToGL({ req, tenantId, paymentId, met
  * Voids a recorded-but-unposted manual/comp/invoice event payment, on CRM
  * rejection - nothing was posted to the GL, so this is a plain status flip.
  */
-async function voidManualRegistrationPayment({ req, tenantId, paymentId }) {
+async function voidManualRegistrationPayment({ req, tenantId, paymentId, command = null }) {
+  if (paymentCommandMode() === "bound") {
+    return sendBoundCommand({
+      path: "/api/journal/events/manual-payment/void",
+      transition: "manual_void",
+      req,
+      tenantId,
+      command: { ...command, paymentId },
+    });
+  }
   const response = await axios.post(
     `${ACCOUNT_SERVICE_URL}/api/journal/events/manual-payment/void`,
     { tenantId, paymentId },
@@ -242,4 +408,5 @@ module.exports = {
   attachRegistrationToPaymentIntent,
   postManualRegistrationPaymentToGL,
   voidManualRegistrationPayment,
+  paymentCommandMode,
 };

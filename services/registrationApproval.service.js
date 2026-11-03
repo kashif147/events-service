@@ -23,20 +23,46 @@ const {
  * null if the registration wasn't in pending_review (already claimed,
  * approved, or rejected).
  */
-async function claimRegistrationForApproval({ id, tenantId }) {
+async function claimRegistrationForApproval({ id, tenantId, actorUserId = null, action = "approve" }) {
   return Registration.findOneAndUpdate(
     { _id: id, tenantId, approvalStatus: "pending_review" },
-    { $set: { approvalStatus: "processing" } },
+    {
+      $set: {
+        approvalStatus: "processing",
+        // P5: the committed claim names the decision, so approve and reject are distinguishable.
+        paymentDecision: { action, actorUserId: actorUserId ? String(actorUserId) : null, claimedAt: new Date() },
+      },
+    },
     { new: true },
   );
 }
 
-/** Releases a claim back to pending_review after a failed approval attempt. */
-async function releaseRegistrationClaim({ id, tenantId }) {
+/**
+ * Releases a claim back to pending_review after a failed attempt. Only the same decision's claim
+ * is released (`action`), so a stale release can never free a claim the other decision now holds.
+ */
+async function releaseRegistrationClaim({ id, tenantId, action = "approve" }) {
   return Registration.updateOne(
-    { _id: id, tenantId, approvalStatus: "processing" },
-    { $set: { approvalStatus: "pending_review" } },
+    {
+      _id: id,
+      tenantId,
+      approvalStatus: "processing",
+      // A claim taken before this field existed (in flight across the deploy) has no action.
+      $or: [{ "paymentDecision.action": action }, { "paymentDecision.action": { $exists: false } }],
+    },
+    { $set: { approvalStatus: "pending_review" }, $unset: { paymentDecision: "" } },
   ).catch(() => {});
+}
+
+/** Bound payment command for this registration (P5 S2); ignored by account calls in legacy mode. */
+function paymentCommandFor(registration, { actorUserId, reason }) {
+  return {
+    registrationId: String(registration._id),
+    registrationType: registration.registrationType,
+    actorUserId: actorUserId ? String(actorUserId) : null,
+    reason,
+    paymentId: registration.paymentId ? String(registration.paymentId) : null,
+  };
 }
 
 /**
@@ -168,6 +194,7 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
         paymentIntentId: claimed.stripePaymentIntentId,
         profileId: finalProfileId,
         membershipNumber: finalMembershipNumber,
+        command: paymentCommandFor(claimed, { actorUserId: reviewerId, reason: "approve" }),
       });
       if (captureResult?.status !== "succeeded") {
         throw AppError.conflict("Payment capture did not succeed - registration was not approved.");
@@ -184,6 +211,7 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
         method: claimed.paymentMethod,
         profileId: finalProfileId,
         membershipNumber: finalMembershipNumber,
+        command: paymentCommandFor(claimed, { actorUserId: reviewerId, reason: "approve" }),
       });
       // Matches the mapping this service always used: comp -> waived,
       // manual/invoice -> manual.
@@ -251,4 +279,5 @@ module.exports = {
   claimRegistrationForApproval,
   releaseRegistrationClaim,
   finalizeRegistrationApproval,
+  paymentCommandFor,
 };

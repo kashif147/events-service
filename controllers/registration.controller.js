@@ -28,6 +28,7 @@ const {
 const {
   claimRegistrationForApproval,
   releaseRegistrationClaim,
+  paymentCommandFor,
   finalizeRegistrationApproval,
 } = require("../services/registrationApproval.service.js");
 
@@ -601,6 +602,8 @@ async function createRegistration(req, res, next) {
         paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
         await publishRegistrationCreated(registration, tenantId);
       } else {
+        // The Registration above is already committed (pending, no paymentId) - the business
+        // object this manual record is bound to (P5 bound payment commands, reason crm_add_attendee).
         const manual = await postManualRegistrationPayment({
           req,
           tenantId,
@@ -612,6 +615,7 @@ async function createRegistration(req, res, next) {
           amount,
           currency,
           method,
+          command: paymentCommandFor(registration, { actorUserId: caller.userId, reason: "crm_add_attendee" }),
         });
         registration.paymentId = manual?.paymentId || null;
         await registration.save();
@@ -1113,7 +1117,12 @@ async function approveRegistration(req, res, next) {
   try {
     const { decision, candidateProfileId } = req.body || {};
 
-    claimed = await claimRegistrationForApproval({ id: req.params.id, tenantId });
+    claimed = await claimRegistrationForApproval({
+      id: req.params.id,
+      tenantId,
+      actorUserId: req.ctx?.userId || req.userId || null,
+      action: "approve",
+    });
     if (!claimed) {
       return next(
         AppError.badRequest(
@@ -1136,7 +1145,7 @@ async function approveRegistration(req, res, next) {
     // Release the claim so a fixable failure (e.g. a transient account-service
     // error) doesn't leave the registration stuck in "processing" forever.
     if (claimed) {
-      await releaseRegistrationClaim({ id: claimed._id, tenantId });
+      await releaseRegistrationClaim({ id: claimed._id, tenantId, action: "approve" });
     }
     if (error instanceof AppError) return next(error);
     return next(appErrorFromUpstream(error, "Failed to approve registration"));
@@ -1215,21 +1224,6 @@ async function retryRegistrationPayment(req, res, next) {
     });
 
     if (switchingFromManual) {
-      // Void the superseded manual/comp/invoice Payment now that a real
-      // PaymentIntent has been created to replace it. Best-effort: a failure
-      // here must never undo the PaymentIntent creation that already
-      // succeeded above - it just leaves a stray never-posted manual Payment
-      // record behind, the same as any other superseded attempt.
-      // voidManualRegistrationPayment is also idempotent (a no-op once
-      // already voided/posted), so a later retry can't double-void it.
-      if (previousPaymentId) {
-        await voidManualRegistrationPayment({ req, tenantId, paymentId: previousPaymentId }).catch((err) => {
-          console.warn(
-            "[events-service] failed to void superseded manual/comp/invoice payment on payment-method switch",
-            { registrationId: String(registration._id), paymentId: previousPaymentId, error: err.message },
-          );
-        });
-      }
       registration.paymentMethod = "stripe";
     }
 
@@ -1250,6 +1244,32 @@ async function retryRegistrationPayment(req, res, next) {
       registration.paymentStatus = "pending";
     }
     await registration.save();
+
+    if (switchingFromManual && previousPaymentId) {
+      // Void the superseded manual/comp/invoice Payment only AFTER the switch to the new
+      // PaymentIntent is committed above (P5 bound payment commands): the void is then backed by
+      // persisted state - the registration no longer points at that Payment. Best-effort: a
+      // failure here must never undo the PaymentIntent that already succeeded - it just leaves a
+      // stray never-posted manual Payment behind, the same as any other superseded attempt.
+      // voidManualRegistrationPayment is idempotent (a no-op once already voided/posted).
+      await voidManualRegistrationPayment({
+        req,
+        tenantId,
+        paymentId: previousPaymentId,
+        command: {
+          ...paymentCommandFor(registration, {
+            actorUserId: req.ctx?.userId || req.userId || null,
+            reason: "payment_method_switched",
+          }),
+          paymentId: String(previousPaymentId),
+        },
+      }).catch((err) => {
+        console.warn(
+          "[events-service] failed to void superseded manual/comp/invoice payment on payment-method switch",
+          { registrationId: String(registration._id), paymentId: String(previousPaymentId), error: err.message },
+        );
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -1276,11 +1296,13 @@ async function retryRegistrationPayment(req, res, next) {
 async function rejectRegistration(req, res, next) {
   const { tenantId } = req.ctx;
   try {
-    const registration = await Registration.findOneAndUpdate(
-      { _id: req.params.id, tenantId, approvalStatus: "pending_review" },
-      { $set: { approvalStatus: "processing" } },
-      { new: true },
-    );
+    const actorUserId = req.ctx?.userId || req.userId || null;
+    const registration = await claimRegistrationForApproval({
+      id: req.params.id,
+      tenantId,
+      actorUserId,
+      action: "reject",
+    });
     if (!registration) {
       return next(
         AppError.badRequest(
@@ -1292,16 +1314,23 @@ async function rejectRegistration(req, res, next) {
     try {
       if (registration.paymentMethod === "stripe") {
         if (registration.stripePaymentIntentId) {
-          await cancelPaymentIntent({ req, tenantId, paymentIntentId: registration.stripePaymentIntentId });
+          await cancelPaymentIntent({
+            req,
+            tenantId,
+            paymentIntentId: registration.stripePaymentIntentId,
+            command: paymentCommandFor(registration, { actorUserId, reason: "reject" }),
+          });
         }
       } else if (registration.paymentId) {
-        await voidManualRegistrationPayment({ req, tenantId, paymentId: registration.paymentId });
+        await voidManualRegistrationPayment({
+          req,
+          tenantId,
+          paymentId: registration.paymentId,
+          command: paymentCommandFor(registration, { actorUserId, reason: "reject" }),
+        });
       }
     } catch (paymentError) {
-      await Registration.updateOne(
-        { _id: registration._id, tenantId, approvalStatus: "processing" },
-        { $set: { approvalStatus: "pending_review" } },
-      ).catch(() => {});
+      await releaseRegistrationClaim({ id: registration._id, tenantId, action: "reject" });
       throw paymentError;
     }
 

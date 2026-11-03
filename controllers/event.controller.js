@@ -12,6 +12,7 @@ const {
   resolveUnitPriceForEntity,
 } = require("../services/pricingResolution.service.js");
 const { cancelPaymentIntent, voidManualRegistrationPayment } = require("../services/accountService.client.js");
+const { paymentCommandFor } = require("../services/registrationApproval.service.js");
 const { publishRegistrationCancelled } = require("../rabbitMQ/publishers/registration.events.publisher.js");
 const {
   publishEventCancelled,
@@ -479,12 +480,18 @@ function isRefundableConfirmedRegistration(registration) {
  * for a pending registration.
  */
 async function releasePendingRegistrationPayment(req, tenantId, registration) {
+  // The registration is already saved cancelled/inactive by cancelEvent - the committed business
+  // state behind this release (P5 bound payment commands, reason event_cancelled).
+  const command = paymentCommandFor(registration, {
+    actorUserId: req.ctx?.userId || req.userId || null,
+    reason: "event_cancelled",
+  });
   if (registration.paymentMethod === "stripe") {
     if (registration.stripePaymentIntentId) {
-      await cancelPaymentIntent({ req, tenantId, paymentIntentId: registration.stripePaymentIntentId });
+      await cancelPaymentIntent({ req, tenantId, paymentIntentId: registration.stripePaymentIntentId, command });
     }
   } else if (registration.paymentId) {
-    await voidManualRegistrationPayment({ req, tenantId, paymentId: registration.paymentId });
+    await voidManualRegistrationPayment({ req, tenantId, paymentId: registration.paymentId, command });
   }
 }
 
