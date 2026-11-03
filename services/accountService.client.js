@@ -1,5 +1,6 @@
 const axios = require("axios");
 const { AppError } = require("../errors/AppError.js");
+const { signatureHeaders } = require("./accountCommandSigning");
 
 const ACCOUNT_SERVICE_URL =
   process.env.ACCOUNT_SERVICE_URL ||
@@ -130,9 +131,14 @@ async function sendBoundCommand({ path, transition, req, tenantId, command, paym
     actorUserId,
     ...extra,
   };
+  // P5 S3: sign the exact bytes that go on the wire (transformRequest sends `raw` unchanged) when
+  // this service's own signing credential is configured; a retry signs again with a fresh nonce.
+  const url = `${base}${path}`;
+  const raw = JSON.stringify(body);
+  Object.assign(headers, signatureHeaders({ method: "POST", url, tenant: headers["x-tenant-id"], idem: headers["Idempotency-Key"], raw }));
   let response;
   try {
-    response = await axios.post(`${base}${path}`, body, { headers, timeout: 15000 });
+    response = await axios.post(url, body, { headers, timeout: 15000, transformRequest: [() => raw] });
   } catch (error) {
     if (error?.response && error.response.status < 500) throw error; // 4xx: appErrorFromUpstream maps it
     // Network failure / 5xx: account state unknown - callers keep their own state unchanged.
