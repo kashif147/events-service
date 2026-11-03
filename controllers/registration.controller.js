@@ -149,6 +149,7 @@ const {
   getPaymentByPaymentIntentId,
   attachRegistrationToPaymentIntent,
 } = require("../services/accountService.client.js");
+const { isRefundRequiredResult } = require("../services/paymentCancelResult.js");
 const {
   publishRegistrationCreated,
   publishRegistrationConfirmed,
@@ -1457,10 +1458,11 @@ async function rejectRegistration(req, res, next) {
       );
     }
 
+    let cancelResult = null;
     try {
       if (registration.paymentMethod === "stripe") {
         if (registration.stripePaymentIntentId) {
-          await cancelPaymentIntent({ req, tenantId, paymentIntentId: registration.stripePaymentIntentId });
+          cancelResult = await cancelPaymentIntent({ req, tenantId, paymentIntentId: registration.stripePaymentIntentId });
         }
       } else if (registration.paymentId) {
         await voidManualRegistrationPayment({ req, tenantId, paymentId: registration.paymentId });
@@ -1476,11 +1478,19 @@ async function rejectRegistration(req, res, next) {
     registration.status = "cancelled";
     registration.approvalStatus = "rejected";
     registration.isActive = false;
+    // P5: "refund_required" = the intent had already been captured (money moved). The rejection stands,
+    // but the payment is recorded as succeeded with a pending refund - never as released or refunded.
+    const refundRequired = isRefundRequiredResult(cancelResult);
+    if (refundRequired) {
+      registration.paymentStatus = "succeeded";
+      registration.refundRequired = true;
+      registration.refundRequiredAt = new Date();
+    }
     await registration.save();
 
     await publishRegistrationCancelled(registration, tenantId);
 
-    return res.status(200).json({ success: true, data: registration });
+    return res.status(200).json({ success: true, data: registration, ...(refundRequired ? { refundRequired: true } : {}) });
   } catch (error) {
     if (error instanceof AppError) return next(error);
     return next(appErrorFromUpstream(error, "Failed to reject registration"));

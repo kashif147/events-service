@@ -15,6 +15,7 @@ const {
 } = require("../services/pricingResolution.service.js");
 const { cancelPaymentIntent, voidManualRegistrationPayment } = require("../services/accountService.client.js");
 const { publishRegistrationCancelled } = require("../rabbitMQ/publishers/registration.events.publisher.js");
+const { isRefundRequiredResult } = require("../services/paymentCancelResult.js");
 const {
   publishEventCancelled,
   publishEventCompleted,
@@ -534,11 +535,12 @@ function isRefundableConfirmedRegistration(registration) {
 async function releasePendingRegistrationPayment(req, tenantId, registration) {
   if (registration.paymentMethod === "stripe") {
     if (registration.stripePaymentIntentId) {
-      await cancelPaymentIntent({ req, tenantId, paymentIntentId: registration.stripePaymentIntentId });
+      return cancelPaymentIntent({ req, tenantId, paymentIntentId: registration.stripePaymentIntentId });
     }
   } else if (registration.paymentId) {
-    await voidManualRegistrationPayment({ req, tenantId, paymentId: registration.paymentId });
+    return voidManualRegistrationPayment({ req, tenantId, paymentId: registration.paymentId });
   }
+  return null;
 }
 
 async function cancelEvent(req, res, next) {
@@ -562,6 +564,7 @@ async function cancelEvent(req, res, next) {
     });
 
     const refundCandidates = [];
+    const refundRequiredRegistrationIds = [];
     for (const registration of registrations) {
       const wasConfirmed = registration.status === "confirmed";
       const refundable = wasConfirmed && isRefundableConfirmedRegistration(registration);
@@ -574,7 +577,20 @@ async function cancelEvent(req, res, next) {
         // Never captured/posted - release the hold/void the unposted
         // payment instead of creating a refund candidate for it.
         try {
-          await releasePendingRegistrationPayment(req, tenantId, registration);
+          const released = await releasePendingRegistrationPayment(req, tenantId, registration);
+          // P5: account answers "refund_required" when the intent was already captured at Stripe
+          // (money moved): nothing was released. Record the pending refund on the registration so the
+          // CRM sees it; never treat it as released/settled. It is deliberately NOT pushed into the
+          // automatic refundCandidates flow: account has just marked that Payment "refund_required"
+          // (eventCancellationRefund skips it as payment_not_refundable) and a captured-but-never-
+          // approved payment may have no GL posting for that reversal to mirror - finance resolves it.
+          if (isRefundRequiredResult(released)) {
+            await Registration.updateOne(
+              { _id: registration._id, tenantId },
+              { $set: { paymentStatus: "succeeded", refundRequired: true, refundRequiredAt: new Date() } },
+            );
+            refundRequiredRegistrationIds.push(String(registration._id));
+          }
         } catch (err) {
           console.error("[events-service] failed to release pending payment during event cancel", {
             registrationId: String(registration._id),
@@ -616,7 +632,7 @@ async function cancelEvent(req, res, next) {
       console.error("[events-service] failed to publish event.cancelled", err.message);
     }
 
-    return res.status(200).json({ success: true, data: omitProductFields(event) });
+    return res.status(200).json({ success: true, data: omitProductFields(event), ...(refundRequiredRegistrationIds.length ? { refundRequiredRegistrationIds } : {}) });
   } catch (error) {
     return next(AppError.internalServerError(error.message || "Failed to cancel event"));
   }
