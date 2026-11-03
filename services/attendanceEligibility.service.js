@@ -3,14 +3,16 @@
 // .../checkin-qr, POST /public/checkin/:token and PUT .../attendance (CRM) -
 // so the four paths can't drift apart. See .claude/rules/attendance.md.
 //
-// These are structure/eligibility checks only. There is deliberately NO
-// attendance time window here yet (product decision pending): until one is
-// agreed, an eligible attendee can still self-mark a session of their own
-// registration at any time.
+// Attendee-side paths additionally pass the P5 time window
+// (services/attendanceWindow.service.js): self = virtual sessions only,
+// opens start-30 min, closes end+15 min; organiser QR scan closes end+60 min;
+// QR minting is allowed before the window opens but never after it closes.
+// Missing/invalid timezone or incomplete session timing fails closed (409).
 const mongoose = require("mongoose");
 const Event = require("../models/event.model.js");
 const EventSession = require("../models/eventSession.model.js");
 const { AppError } = require("../errors/AppError.js");
+const { checkWindow, computeWindow, PATHS } = require("./attendanceWindow.service.js");
 
 function isValidObjectId(value) {
   return typeof value === "string" && mongoose.isValidObjectId(value) && /^[0-9a-fA-F]{24}$/.test(value);
@@ -96,10 +98,11 @@ async function loadRegistrationSession({ tenantId, registration, sessionId }) {
  * attendanceRollup.service.js's requiredSessionIds predicate exactly.
  * @returns {Promise<AppError|null>}
  */
-async function selectedSessionError({ tenantId, registration, sessionId }) {
+async function selectedSessionError({ tenantId, registration, sessionId, event: loaded }) {
   const selected = Array.isArray(registration.sessionIds) ? registration.sessionIds.map(String) : [];
   if (!selected.length) return null;
-  const event = await Event.findOne({ _id: registration.eventId, tenantId }).select("allowPartialAttendance").lean();
+  const event =
+    loaded || (await Event.findOne({ _id: registration.eventId, tenantId }).select("allowPartialAttendance").lean());
   if (!event) return AppError.notFound("Event not found");
   if (event.allowPartialAttendance && !selected.includes(String(sessionId))) {
     return new AppError(
@@ -117,16 +120,50 @@ async function selectedSessionError({ tenantId, registration, sessionId }) {
  * tenant, and selected-session membership for partial attendance.
  * @returns {Promise<{session?: object, error?: AppError}>}
  */
-async function checkAttendeeAttendance({ tenantId, registration, sessionId }) {
+function windowAppError(e) {
+  // opensAt / closesAt (ISO) ride along as top-level error fields so the client can show them.
+  return new AppError(e.message, e.status || 409, e.code, e.details ? { ...e.details } : {});
+}
+
+/**
+ * Full attendee-side check (self route, QR minting, organiser QR scan):
+ * event registration, eligible state, session of the same event in the same
+ * tenant, selected-session membership for partial attendance, then the time
+ * window for `path` (PATHS.SELF | PATHS.QR_SCAN | PATHS.QR_MINT).
+ * @returns {Promise<{session?: object, event?: object, window?: {opensAt, closesAt}, error?: AppError}>}
+ */
+async function checkAttendeeAttendance({ tenantId, registration, sessionId, path, now = new Date() }) {
+  if (!Object.values(PATHS).includes(path) || path === PATHS.CRM) {
+    throw new Error("checkAttendeeAttendance: an attendee path is required");
+  }
   const targetError = attendanceTargetError(registration);
   if (targetError) return { error: targetError };
   const eligibilityError = registrationEligibilityError(registration);
   if (eligibilityError) return { error: eligibilityError };
   const { session, error } = await loadRegistrationSession({ tenantId, registration, sessionId });
   if (error) return { error };
-  const selectionError = await selectedSessionError({ tenantId, registration, sessionId });
+  const event = await Event.findOne({ _id: registration.eventId, tenantId })
+    .select("allowPartialAttendance timezone")
+    .lean();
+  if (!event) return { error: AppError.notFound("Event not found") };
+  const selectionError = await selectedSessionError({ tenantId, registration, sessionId, event });
   if (selectionError) return { error: selectionError };
-  return { session };
+  const w = checkWindow({ timezone: event.timezone, session, path, now });
+  if (w.error) return { error: windowAppError(w.error), session, event };
+  return { session, event, window: { opensAt: w.opensAt, closesAt: w.closesAt } };
+}
+
+/**
+ * CRM correction context: the widest (QR) window, or unavailable. Never blocks the correction -
+ * it only decides whether a reason is required.
+ * @returns {Promise<{outsideWindow: boolean}>}
+ */
+async function correctionWindowContext({ tenantId, registration, session, now = new Date() }) {
+  const event = await Event.findOne({ _id: registration.eventId, tenantId }).select("timezone").lean();
+  const w = computeWindow({ timezone: event?.timezone, session, path: PATHS.QR_SCAN });
+  if (w.error) return { outsideWindow: true };
+  const t = now.getTime();
+  return { outsideWindow: t < w.opensAt.getTime() || t > w.closesAt.getTime() };
 }
 
 module.exports = {
@@ -137,4 +174,6 @@ module.exports = {
   loadRegistrationSession,
   selectedSessionError,
   checkAttendeeAttendance,
+  correctionWindowContext,
+  windowAppError,
 };

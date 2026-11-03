@@ -42,6 +42,7 @@ const { createCertificateForRegistration } = require("../services/certificateIss
 const app = require("../app");
 const Event = require("../models/event.model.js");
 const EventSession = require("../models/eventSession.model.js");
+const { TZ, sessionTiming } = require("./helpers/attendanceTiming.js");
 const Course = require("../models/course.model.js");
 const Registration = require("../models/registration.model.js");
 const Template = require("../models/template.model.js");
@@ -119,13 +120,14 @@ beforeEach(async () => {
     startDate: new Date("2030-01-01T09:00:00Z"),
     endDate: new Date("2030-01-01T17:00:00Z"),
     status: "Published",
+    timezone: TZ,
     memberPrice: 50,
     nonMemberPrice: 80,
     createdBy: CRM_USER,
   };
   event = await Event.create({ tenantId: TENANT, ...base });
   eventC = await Event.create({ tenantId: OTHER_TENANT, ...base });
-  session = await EventSession.create({ tenantId: TENANT, eventId: event._id, label: "Day 1", date: new Date() });
+  session = await EventSession.create({ tenantId: TENANT, eventId: event._id, label: "Day 1", date: new Date(), isVirtual: true, ...sessionTiming() });
   course = await Course.create({ tenantId: TENANT, title: "Original course", startDate: new Date("2030-02-01") });
   courseC = await Course.create({ tenantId: OTHER_TENANT, title: "Original course", startDate: new Date("2030-02-01") });
   template = await Template.create({
@@ -307,9 +309,14 @@ describe("admin routes: CRM + permission effects, tenant-scoped", () => {
     expect(await Course.countDocuments({ tenantId: TENANT, title: "New course" })).toBe(1);
   });
 
-  it("POST /events/:id/sessions adds a session", async () => {
-    const res = await send("post", `/api/events/${event._id}/sessions`, crm(), {
+  it("POST /events/:id/sessions adds a session (published event: audited, reason required)", async () => {
+    const noReason = await send("post", `/api/events/${event._id}/sessions`, crm(), {
       body: { label: "Day 2", date: "2030-01-02" },
+    });
+    expect(noReason.status).toBe(400);
+    expect(noReason.body.error.code).toBe("SCHEDULE_CHANGE_REASON_REQUIRED");
+    const res = await send("post", `/api/events/${event._id}/sessions`, crm(), {
+      body: { label: "Day 2", date: "2030-01-02", scheduleChangeReason: "Second day added" },
     });
     expect(res.status).toBe(201);
   });

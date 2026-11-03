@@ -169,12 +169,19 @@ async function createRegistrationPaymentIntent({
   amount,
   currency,
   purpose,
+  entityType,
+  entityId,
 }) {
   const response = await axios.post(
     `${ACCOUNT_SERVICE_URL}/api/payments/intents`,
     {
       tenantId,
-      registrationId,
+      // P5 payer binding: account-service refuses a registrationId on a PORTAL caller's
+      // intent; PORTAL callers send the event/course (entityType/entityId) instead and the
+      // registration is attached afterwards (attachRegistrationToPaymentIntent).
+      ...(registrationId ? { registrationId } : {}),
+      ...(entityType ? { entityType } : {}),
+      ...(entityId ? { entityId } : {}),
       // profileId is undefined at intake for a not-yet-resolved attendee
       // (registrations are approval-gated - see registration-flow.md) -
       // account-service automatically requests manual capture for
@@ -346,6 +353,11 @@ async function attachRegistrationToPaymentIntent({
   tenantId,
   paymentIntentId,
   registrationId,
+  entityType,
+  entityId,
+  purpose,
+  amount,
+  currency,
   productCode,
   eventCategoryCode,
 }) {
@@ -353,6 +365,14 @@ async function attachRegistrationToPaymentIntent({
     `${ACCOUNT_SERVICE_URL}/api/payments/intents/${paymentIntentId}/attach-registration`,
     {
       registrationId,
+      // P5 payer binding: the registration's own binding, from this service's Registration
+      // record. account-service compares it with the intent's stored target/purpose/
+      // amount/currency (and the live PaymentIntent) and binds atomically, once.
+      entityType, // "event" | "course"
+      entityId, // Registration.eventId | courseId
+      purpose, // "eventRegistration" | "courseRegistration"
+      amount,
+      currency,
       ...(productCode ? { productCode } : {}),
       ...(eventCategoryCode ? { eventCategoryCode } : {}),
     },

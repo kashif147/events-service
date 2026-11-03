@@ -19,6 +19,12 @@ const {
   updateAttendeeProfileFields,
 } = require("../services/profileLookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
+const {
+  isStudentPriced,
+  resolvePortalStudentEligibility,
+  crmStudentEligibility,
+  withMemberFacingStudentEligibility,
+} = require("../services/studentEligibility.service.js");
 const { resolveLookupNamesByIds } = require("../services/lookup.client.js");
 const {
   determinePriceCategory,
@@ -184,6 +190,28 @@ async function resolveProductMetadata({ tenantId, registrationType, eventId, cou
   return { productCode: event?.productCode || null, eventCategoryCode: event?.eventCategoryLookupCode || null };
 }
 
+/**
+ * P5 payer binding: binds the account-service Payment to a registration ONCE. The
+ * registration's paymentId / stripePaymentIntentId are set by a conditional update that only
+ * matches an unbound registration (or one already bound to this same payment -> idempotent),
+ * so a registration can never acquire a second, conflicting payment binding here. The
+ * cross-service guarantee (one active binding per registration) is account-service's
+ * registrationBinding unique index; this is the events-side half of the same rule.
+ */
+async function bindRegistrationPaymentOnce(registration, tenantId, set) {
+  const unbound = [{ paymentId: null }, { paymentId: { $exists: false } }];
+  const same = set.paymentId ? [{ paymentId: set.paymentId }] : [];
+  const updated = await Registration.findOneAndUpdate(
+    { _id: registration._id, tenantId, $or: [...unbound, ...same] },
+    { $set: set },
+    { new: true },
+  );
+  if (!updated) {
+    throw new AppError("This registration already has a payment", 409, "REGISTRATION_ALREADY_HAS_PAYMENT");
+  }
+  return updated;
+}
+
 async function createRegistration(req, res, next) {
   try {
     const { tenantId } = req.ctx;
@@ -203,6 +231,10 @@ async function createRegistration(req, res, next) {
       // rather than create a second, separate PaymentIntent for a payment
       // the payer already confirmed - see the stripe branch below.
       stripePaymentIntentId,
+      // PORTAL STUDENT tier without a verified student membership:
+      // { institution } - recorded as a claim a CRM user must verify before
+      // approval/capture (services/studentEligibility.service.js).
+      studentClaim,
     } = req.body || {};
 
     if (!registrationType || !["event", "course"].includes(registrationType)) {
@@ -433,6 +465,7 @@ async function createRegistration(req, res, next) {
       let eventCategoryCode;
       let priceBreakdown = [];
       let seatPriceCategory;
+      let studentEligibility = null;
       if (hasLineItems) {
         if (isPortalCaller) {
           for (const line of lineItems) {
@@ -443,6 +476,12 @@ async function createRegistration(req, res, next) {
             });
             if (reason) throw new AppError(reason, 400, "TIER_NOT_ELIGIBLE");
           }
+          studentEligibility = resolvePortalStudentEligibility({
+            tierLines: lineItems,
+            isActiveMember,
+            membershipCategory,
+            studentClaim,
+          });
         }
         const resolved = await resolveLineItemsAmount({ tenantId, eventId, lineItems });
         amount = resolved.amount;
@@ -461,6 +500,21 @@ async function createRegistration(req, res, next) {
               entity: event,
             })
           : "standard";
+        if (isPortalCaller) {
+          // Auto-derived pricing: GROUP_STUDENT is CRM-only, so a derived
+          // group_student falls back to standard; derived student pricing is
+          // backed by the verified undergraduate-student membership.
+          if (seatPriceCategory === "group_student") {
+            seatPriceCategory = "standard";
+          }
+          if (seatPriceCategory === "student") {
+            studentEligibility = resolvePortalStudentEligibility({
+              tierLines: [{ tierKey: "STUDENT", quantity: seatQuantity }],
+              isActiveMember,
+              membershipCategory,
+            });
+          }
+        }
         const resolved = await resolveAmount({
           tenantId,
           registrationType,
@@ -475,6 +529,10 @@ async function createRegistration(req, res, next) {
         currency = resolved.currency;
         productCode = resolved.productCode;
         eventCategoryCode = resolved.eventCategoryCode;
+      }
+
+      if (!isPortalCaller && isStudentPriced({ priceCategory: seatPriceCategory, priceBreakdown })) {
+        studentEligibility = crmStudentEligibility({ crmUserId: caller.userId, studentClaim });
       }
 
       // Every registration starts pending_review now, regardless of payment
@@ -494,6 +552,7 @@ async function createRegistration(req, res, next) {
         quantity: seatQuantity,
         priceCategory: seatPriceCategory,
         priceBreakdown,
+        studentEligibility,
         profileId: null,
         membershipNumber: candidateMembershipNumber,
         isMemberAtRegistration: isActiveMember,
@@ -556,6 +615,27 @@ async function createRegistration(req, res, next) {
             "This PaymentIntent has already been used for another registration.",
           );
         }
+        // P5 payer binding (belt and braces; account-service enforces the same on attach):
+        // a PORTAL caller may only use an intent it created, and an intent made for one
+        // event/course can never pay for another.
+        const entityType = registrationType === "course" ? "course" : "event";
+        const entityId = String(registrationType === "course" ? courseId : eventId);
+        if (
+          isPortalCaller &&
+          existingPayment.payer &&
+          String(existingPayment.payer.userId || "") !== String(caller.userId)
+        ) {
+          throw new AppError("Not permitted for this record", 403, "NOT_OWNER");
+        }
+        if (
+          existingPayment.target &&
+          (existingPayment.target.entityType !== entityType ||
+            String(existingPayment.target.entityId) !== entityId)
+        ) {
+          throw AppError.badRequest(
+            "stripePaymentIntentId was not created for this event/course.",
+          );
+        }
         if (
           existingPayment.purpose !== purpose ||
           existingPayment.amount !== amount ||
@@ -565,23 +645,69 @@ async function createRegistration(req, res, next) {
             "stripePaymentIntentId does not match this registration's purpose/amount/currency.",
           );
         }
+        // Atomic single attach at account-service: a concurrent or repeated attach of the
+        // same intent to a different registration is a 409, which lands in the rollback
+        // below (this Registration is deleted, the caller gets the 409).
         const attached = await attachRegistrationToPaymentIntent({
           req,
           tenantId,
           paymentIntentId: stripePaymentIntentId,
           registrationId: String(registration._id),
+          entityType,
+          entityId,
+          purpose,
+          amount,
+          currency,
           productCode,
           eventCategoryCode,
         });
-        registration.paymentId = existingPayment._id || null;
-        registration.stripePaymentIntentId = stripePaymentIntentId;
         // requires_capture (authorized) is the expected live state here,
         // mirroring what the requires_capture webhook branch already sets
         // for the legacy (events-service-created-intent) flow.
-        if (attached?.status === "requires_capture") {
-          registration.paymentStatus = "authorized";
-        }
-        await registration.save();
+        registration = await bindRegistrationPaymentOnce(registration, tenantId, {
+          paymentId: String(attached?.paymentId || existingPayment._id || "") || null,
+          stripePaymentIntentId,
+          ...(attached?.status === "requires_capture" ? { paymentStatus: "authorized" } : {}),
+        });
+        await publishRegistrationCreated(registration, tenantId);
+      } else if (method === "stripe" && isPortalCaller) {
+        // P5 payer binding: a PORTAL caller's intent can't carry a registrationId
+        // (account-service refuses it), so create it for the event/course and then bind
+        // this registration with the same atomic attach the pre-authorized path uses.
+        const purpose = registrationType === "course" ? "courseRegistration" : "eventRegistration";
+        const entityType = registrationType === "course" ? "course" : "event";
+        const entityId = String(registrationType === "course" ? courseId : eventId);
+        const intent = await createRegistrationPaymentIntent({
+          req,
+          tenantId,
+          profileId: candidateProfileId || undefined,
+          membershipNumber: candidateMembershipNumber,
+          amount,
+          currency,
+          productCode,
+          eventCategoryCode,
+          purpose,
+          entityType,
+          entityId,
+        });
+        const attached = await attachRegistrationToPaymentIntent({
+          req,
+          tenantId,
+          paymentIntentId: intent?.paymentIntentId,
+          registrationId: String(registration._id),
+          entityType,
+          entityId,
+          purpose,
+          amount,
+          currency,
+          productCode,
+          eventCategoryCode,
+        });
+        registration = await bindRegistrationPaymentOnce(registration, tenantId, {
+          paymentId: String(attached?.paymentId || intent?.id || "") || null,
+          stripePaymentIntentId: intent?.paymentIntentId || null,
+        });
+        paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
         await publishRegistrationCreated(registration, tenantId);
       } else if (method === "stripe") {
         const intent = await createRegistrationPaymentIntent({
@@ -596,9 +722,11 @@ async function createRegistration(req, res, next) {
           eventCategoryCode,
           purpose: registrationType === "course" ? "courseRegistration" : "eventRegistration",
         });
-        registration.paymentId = intent?.paymentId || null;
-        registration.stripePaymentIntentId = intent?.paymentIntentId || null;
-        await registration.save();
+        // account-service's createIntent names the Payment id "id" (see retry-payment).
+        registration = await bindRegistrationPaymentOnce(registration, tenantId, {
+          paymentId: String(intent?.id || intent?.paymentId || "") || null,
+          stripePaymentIntentId: intent?.paymentIntentId || null,
+        });
         paymentPayload = { clientSecret: intent?.clientSecret, checkoutUrl: intent?.checkoutUrl };
         await publishRegistrationCreated(registration, tenantId);
       } else {
@@ -617,8 +745,9 @@ async function createRegistration(req, res, next) {
           method,
           command: paymentCommandFor(registration, { actorUserId: caller.userId, reason: "crm_add_attendee" }),
         });
-        registration.paymentId = manual?.paymentId || null;
-        await registration.save();
+        registration = await bindRegistrationPaymentOnce(registration, tenantId, {
+          paymentId: manual?.paymentId ? String(manual.paymentId) : null,
+        });
         await publishRegistrationCreated(registration, tenantId);
         // No publishRegistrationConfirmed here - manual/comp/invoice payments
         // are recorded (not posted) at intake; confirmation only ever happens
@@ -629,7 +758,11 @@ async function createRegistration(req, res, next) {
 
       return res.status(201).json({
         success: true,
-        data: { registration, payment: paymentPayload },
+        data: {
+          // Portal callers get the member-facing claim view only (no verifier/staff fields).
+          registration: isPortalCaller ? withMemberFacingStudentEligibility(registration) : registration,
+          payment: paymentPayload,
+        },
       });
     } catch (innerError) {
       // Roll back: don't leave a half-created Registration behind just
@@ -898,7 +1031,9 @@ async function getRegistrationById(req, res, next) {
       ? coursesById.get(String(registration.courseId))?.title || null
       : null;
 
-    return res.status(200).json({ success: true, data: enriched });
+    // A PORTAL owner sees only the member-facing student claim fields.
+    const data = isPortalOwnerScoped(req) ? withMemberFacingStudentEligibility(enriched) : enriched;
+    return res.status(200).json({ success: true, data });
   } catch (error) {
     return next(appErrorFromUpstream(error, "Failed to fetch registration"));
   }
@@ -1060,7 +1195,9 @@ async function getMyRegistrations(req, res, next) {
       ? await resolveLookupNamesByIds(eventTypeIds, req, tenantId).catch(() => new Map())
       : new Map();
 
-    let enriched = enrichRegistrationsForProfile(registrations, eventsById, coursesById, sessionsById, eventTypesById);
+    // Self view: member-facing student claim fields only, whoever the caller is.
+    let enriched = enrichRegistrationsForProfile(registrations, eventsById, coursesById, sessionsById, eventTypesById)
+      .map(withMemberFacingStudentEligibility);
 
     if (["past", "current", "upcoming"].includes(timing)) {
       enriched = enriched.filter((reg) => reg.timing === timing);
@@ -1090,7 +1227,8 @@ async function cancelRegistration(req, res, next) {
 
     await publishRegistrationCancelled(registration, tenantId);
 
-    return res.status(200).json({ success: true, data: registration });
+    const data = isPortalOwnerScoped(req) ? withMemberFacingStudentEligibility(registration) : registration;
+    return res.status(200).json({ success: true, data });
   } catch (error) {
     return next(appErrorFromUpstream(error, "Failed to cancel registration"));
   }
@@ -1223,29 +1361,60 @@ async function retryRegistrationPayment(req, res, next) {
       purpose: registration.registrationType === "course" ? "courseRegistration" : "eventRegistration",
     });
 
-    if (switchingFromManual) {
-      registration.paymentMethod = "stripe";
-    }
-
-    if (intent?.paymentIntentId && intent.paymentIntentId !== registration.stripePaymentIntentId) {
-      registration.stripePaymentIntentId = intent.paymentIntentId;
+    // P5 payer binding: the replacement is a single conditional transition from the
+    // binding this request read (previous paymentId + PaymentIntent) to the one
+    // account-service returned (which already enforced one active binding per registration).
+    // A concurrent retry/attach that changed the binding in between makes this a 409
+    // instead of silently overwriting it; repeating the same transition is idempotent.
+    const previousIntentId = registration.stripePaymentIntentId || null;
+    const set = {};
+    if (switchingFromManual) set.paymentMethod = "stripe";
+    if (intent?.paymentIntentId && intent.paymentIntentId !== previousIntentId) {
+      set.stripePaymentIntentId = intent.paymentIntentId;
       // account-service's createIntent response names the Payment document
       // id "id" (see payments.service.js's buildIntentResponse and its
       // fresh-create return), not "paymentId" - accountService.client.js
       // passes that response through unchanged.
-      registration.paymentId = intent.id || registration.paymentId;
+      set.paymentId = intent.id ? String(intent.id) : registration.paymentId;
     }
     // account-service's domain status is "requires_capture" once Stripe has
     // authorized the funds (mirrors payment.status.listener.js's mapping) -
     // never downgrade an already-authorized/succeeded registration here.
     if (intent?.status === "requires_capture") {
-      registration.paymentStatus = "authorized";
+      set.paymentStatus = "authorized";
     } else if (!["authorized", "succeeded"].includes(registration.paymentStatus)) {
-      registration.paymentStatus = "pending";
+      set.paymentStatus = "pending";
     }
-    await registration.save();
+    const fromBinding = { paymentId: previousPaymentId ?? null, stripePaymentIntentId: previousIntentId };
+    const toBinding = set.stripePaymentIntentId
+      ? { paymentId: set.paymentId ?? null, stripePaymentIntentId: set.stripePaymentIntentId }
+      : fromBinding;
+    const replaced = await Registration.findOneAndUpdate(
+      { _id: registration._id, tenantId, approvalStatus: "pending_review", $or: [fromBinding, toBinding] },
+      { $set: set },
+      { new: true },
+    );
+    if (!replaced) {
+      return next(
+        new AppError(
+          "This registration's payment changed while retrying - reload and try again.",
+          409,
+          "REGISTRATION_PAYMENT_CHANGED",
+        ),
+      );
+    }
+    Object.assign(registration, { paymentStatus: replaced.paymentStatus, paymentMethod: replaced.paymentMethod });
+
+    if (switchingFromManual) {
+      registration.paymentMethod = "stripe";
+    }
+
 
     if (switchingFromManual && previousPaymentId) {
+      // (Only after the binding transition above succeeded - a lost race voids nothing.)
+      // account-service (P5 MANUAL_TO_CARD) already cancels an unposted manual record in the
+      // same atomic update that releases its registration binding to the new card intent, so
+      // this call is an idempotent confirmation (voided:false when already cancelled).
       // Void the superseded manual/comp/invoice Payment only AFTER the switch to the new
       // PaymentIntent is committed above (P5 bound payment commands): the void is then backed by
       // persisted state - the registration no longer points at that Payment. Best-effort: a

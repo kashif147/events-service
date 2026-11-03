@@ -4,6 +4,7 @@ const { resolveEventTenant } = require("../eventTenant.js");
 const {
   publishRegistrationConfirmed,
 } = require("../publishers/registration.events.publisher.js");
+const { studentVerificationState } = require("../../services/studentEligibility.service.js");
 
 /**
  * Handles account-service's "payments.events.status.updated.v1" routing key
@@ -11,6 +12,27 @@ const {
  * this in account-service, mirroring how portal-service already consumes
  * accounts.events for membership application status updates).
  */
+/**
+ * True only when the event's payment is the registration's own: same account-service
+ * Payment id (registration.paymentId) or same Stripe PaymentIntent
+ * (registration.stripePaymentIntentId). Either key, when known on both sides, must agree;
+ * with no comparable key the event is not trusted (fail closed). account-service sends
+ * paymentIntentId on every payments.events.status.updated.v1 (P5); older CRM-created
+ * registrations have no paymentId and rely on it.
+ */
+function paymentMatchesRegistration(registration, data = {}) {
+  const evPaymentId = data.paymentId != null ? String(data.paymentId) : "";
+  const evIntentId = data.paymentIntentId != null ? String(data.paymentIntentId) : "";
+  const regPaymentId = registration.paymentId != null ? String(registration.paymentId) : "";
+  const regIntentId = registration.stripePaymentIntentId ? String(registration.stripePaymentIntentId) : "";
+  if (evPaymentId && regPaymentId && evPaymentId !== regPaymentId) return false;
+  if (evIntentId && regIntentId && evIntentId !== regIntentId) return false;
+  return Boolean(
+    (evPaymentId && regPaymentId && evPaymentId === regPaymentId) ||
+      (evIntentId && regIntentId && evIntentId === regIntentId),
+  );
+}
+
 async function handlePaymentStatusUpdated(payload, context) {
   // Phase A / A2: the event tenant is required and the registration must belong to it. Ownership is
   // never inferred from registrationId alone. Rejections are logged and skipped (no throw - see
@@ -50,6 +72,16 @@ async function handlePaymentStatusUpdated(payload, context) {
     return;
   }
 
+  // P5 payer binding: the status must be for THIS registration's own payment. A Payment
+  // that merely carries this registrationId (another payer's intent) never changes it.
+  if (!paymentMatchesRegistration(registration, data)) {
+    console.warn("[events-service] PaymentRegistrationMismatch: status event is not for this registration's payment, skipping", {
+      registrationId: String(registrationId),
+      eventId: payload?.eventId || null,
+    });
+    return;
+  }
+
   if (status === "succeeded") {
     // Manual-capture registrations (the normal case now - see
     // registration-flow.md) only reach "succeeded" via approveRegistration's
@@ -58,9 +90,21 @@ async function handlePaymentStatusUpdated(payload, context) {
     // for automatic-capture payments (there are none for events/courses
     // today, but this is left in place rather than assuming it can't happen).
     registration.paymentStatus = "succeeded";
-    registration.status = "confirmed";
-    await registration.save();
-    await publishRegistrationConfirmed(registration, registration.tenantId);
+    // P5 STUDENT policy: a capture that happened outside approval never
+    // confirms a registration whose student pricing claim is unverified or
+    // rejected - it stays pending for CRM follow-up.
+    const studentState = studentVerificationState(registration);
+    if (studentState !== "pending" && studentState !== "rejected") {
+      registration.status = "confirmed";
+      await registration.save();
+      await publishRegistrationConfirmed(registration, registration.tenantId);
+    } else {
+      await registration.save();
+      console.warn("[events-service] StudentVerificationUnresolvedCapture: payment succeeded outside approval; registration left pending", {
+        registrationId: String(registration._id),
+        eventId: payload?.eventId || null,
+      });
+    }
   } else if (status === "requires_capture") {
     // Stripe has authorized (held) the funds. Capture only ever happens via
     // an explicit PUT /:id/approve call (CRM's Add Attendee "Approve now"
@@ -76,4 +120,4 @@ async function handlePaymentStatusUpdated(payload, context) {
   }
 }
 
-module.exports = { handlePaymentStatusUpdated };
+module.exports = { handlePaymentStatusUpdated, paymentMatchesRegistration };

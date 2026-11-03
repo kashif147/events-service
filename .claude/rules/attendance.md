@@ -9,29 +9,91 @@ once**, at event completion (`services/attendanceRollup.service.js`'s
 with `allowPartialAttendance:true` means a registration's pass/fail can only be judged
 once every session it's required to attend has actually happened.
 
-## Three ways an entry gets written
+## Ways an entry gets written
 
-1. **QR self-check-in** (`method:"qr"`) — `services/checkinToken.service.js` signs a
-   short-lived HMAC token (`CHECKIN_TOKEN_SECRET` env var) encoding
-   `tenantId`/`registrationId`/`sessionId`; `GET /registrations/:id/sessions/:sessionId/checkin-qr`
-   (CRM, or a PORTAL caller for their own registration only - see auth-and-authorization.md) mints one, `POST /api/public/checkin/:token`
-   (`routes/publicCheckin.routes.js`, mounted in `app.js` **before**
-   `app.use(authenticate)` — the token itself is the credential) redeems it. The write is
-   append-only and atomically guarded (`"sessionAttendance.sessionId": {$ne: sessionId}`
-   in the query), so a replayed/duplicate scan is a safe idempotent no-op, not a duplicate
-   entry or an error.
-2. **Manual** — CRM (userType CRM only): `PUT /registrations/:id/sessions/:sessionId/attendance`
-   (`method:"manual-crm"`, can set *or overwrite* any prior entry for that session,
-   including a Zoom/Teams auto-synced one). Attendee self-service outside the QR flow:
-   `POST /registrations/:id/sessions/:sessionId/attendance/self`
-   (`method:"manual-attendee"`, **PORTAL-only** - `requirePortalUser`, CRM gets 403
-   `PORTAL_ONLY` and must use the CRM route so a staff action is stored as `manual-crm`
-   with `markedBy`, never as an attendee self-attestation; ownership-checked against
-   `submittedByUserId`, any miss is 403 `NOT_OWNER`; can only mark `"attended"`, never
-   `"absent"`; never overwrites an existing entry for the session).
-3. **Zoom/Teams auto-sync** (`method:"zoom"`/`"teams"`) — see below. **Never overwrites an
-   existing `"manual-crm"` entry** (`services/onlineAttendanceSync.service.js` checks this
-   explicitly) - a human correction always wins over a later auto-sync pass.
+1. **Organiser QR scan** (`method:"qr-organizer"`) — `GET /registrations/:id/sessions/:sessionId/checkin-qr`
+   (CRM, or a PORTAL caller for their own registration) mints a signed pass
+   (`services/checkinToken.service.js`, HMAC with the **required** dedicated
+   `CHECKIN_TOKEN_SECRET`; no JWT_SECRET / hard-coded fallback - `app.js` fails the boot if it
+   is missing, shorter than 32 chars or equal to JWT_SECRET). The pass expires when the
+   session's QR window closes and is **shown to the organiser**, who scans it:
+   `POST /registrations/checkin/scan` (CRM + `events:write`; the pass's tenant must equal the
+   scanner's -> else 403 `CHECKIN_TENANT_MISMATCH`). Append-only, atomically guarded, a repeat
+   scan is a 200 no-op; `scannedBy` records the organiser. A pass alone is not proof of
+   presence - the authenticated organiser is.
+   **Retired (P5):** `POST /api/public/checkin/:token` returns 410 `CHECKIN_LINK_RETIRED` and
+   writes nothing; `GET /api/public/checkin/:token` is an informational page only. Legacy
+   `method:"qr"` entries still load and roll up.
+2. **CRM correction** (`method:"manual-crm"`) — `PUT /registrations/:id/sessions/:sessionId/attendance`
+   (CRM + `events:write`): can set or overwrite any entry, in any registration state, but
+   - `reason` (<= 500 chars) is **required** when the write is outside the session's QR window
+     (or the window is unavailable) or overwrites an existing entry -> else 400
+     `CORRECTION_REASON_REQUIRED`; the overwritten entry is kept in `previous`, plus
+     `outsideWindow` and `markedBy`;
+   - the write is conditional on the entry that was read (concurrent change -> 409
+     `ATTENDANCE_CHANGED_CONCURRENTLY`);
+   - attended -> absent on a registration with an **issued** certificate sets
+     `Certificate.reviewRequired` (`reviewReason:"ATTENDANCE_DOWNGRADED"`) - never revoked,
+     status unchanged;
+   - every correction (and any review flag) is audited through the transactional outbox in
+     the same transaction (see "Audit delivery").
+3. **Attendee self-service** (`method:"manual-attendee"`) — `POST .../attendance/self`,
+   **PORTAL-only** (`requirePortalUser`; CRM -> 403 `PORTAL_ONLY`), **virtual sessions only**
+   (in-person -> 409 `ATTENDANCE_SELF_NOT_ALLOWED_IN_PERSON`: the organiser scan is required),
+   ownership-checked against `submittedByUserId` (403 `NOT_OWNER`), only `"attended"`, never
+   overwrites; an attendee who already has an entry gets 200 regardless of the window.
+4. **Zoom/Teams auto-sync** (`method:"zoom"`/`"teams"`) — see below. Not windowed (the
+   provider's report is the evidence). **Never overwrites an existing `"manual-crm"` entry**.
+
+## Time window (P5, owner-approved 2026-11-03) - `services/attendanceWindow.service.js`
+
+Computed in the **event's stored IANA timezone** (`Event.timezone`, no default):
+
+| Path | Opens | Closes |
+|---|---|---|
+| organiser QR scan | start - 30 min | end + 60 min |
+| virtual self | start - 30 min | end + 15 min |
+| pass minting | any time before close | end + 60 min (pass `exp`) |
+| CRM correction | not windowed (reason rule above) | |
+
+- Session instants come from `EventSession.localDate` (`YYYY-MM-DD`), optional
+  `endLocalDate` (overnight sessions), and `startTime`/`endTime` (`HH:mm`). The legacy `date`
+  field is **not** used: the CRM stored it as browser-local midnight in UTC, so its calendar day
+  is not recoverable.
+- **Fail closed (409)**, never an all-day or Europe/Dublin substitute: no/invalid event timezone
+  (`ATTENDANCE_WINDOW_UNAVAILABLE`), missing localDate/startTime/endTime
+  (`SESSION_TIMING_INCOMPLETE`).
+- **DST**: a wall-clock time that does not exist (spring gap) is rejected
+  (`SESSION_TIME_NONEXISTENT`); one that occurs twice (autumn overlap) needs an explicit
+  `startUtcOffset`/`endUtcOffset` (`SESSION_TIME_AMBIGUOUS`); never silently chosen. End must
+  be after start (`SESSION_END_NOT_AFTER_START`).
+- No per-event overrides in v1.
+
+## Timezone and schedule changes - explicit and audited
+
+- `Event.timezone` is set explicitly at create (CRM pre-fills it from the tenant setting; the
+  user confirms) or through `PUT /events/:id/timezone` (CRM + `events:write`). The generic
+  `PUT /events/:id` refuses timezone fields (400 `USE_TIMEZONE_ENDPOINT`). A later tenant-setting
+  change never moves an event's stored zone. No bulk back-fill - existing events stay fail-closed
+  until a CRM user sets their zone and session dates one by one (this is the correction workflow).
+- Once an event is Published or has registrations, changing the timezone, or any session's
+  `localDate`/`endLocalDate`/`startTime`/`endTime`/offsets/`isVirtual`/`date` (add, update or
+  delete), needs `scheduleChangeReason` (400 `SCHEDULE_CHANGE_REASON_REQUIRED`) and is audited
+  (`events.session.schedule_changed.v1`) in the same transaction. An unchanged re-save needs no
+  reason. Completed/Cancelled events are locked (409 `EVENT_SCHEDULE_LOCKED`).
+
+## Audit delivery (transactional outbox)
+
+`services/outbox.service.js` + `models/outboxEvent.model.js` (collection `outboxEvents`): the
+fact is written in the **same Mongo transaction** as the change (`services/transaction.js`;
+needs a replica set - Atlas everywhere, single-node replica set in tests), then relayed with a
+**broker confirm** (`publisher.publishConfirmed`, exchange `events.events`, explicit routing key,
+`eventId` = deterministic `eventKey`). Unconfirmed -> PENDING with backoff (1 s .. 15 min),
+logged after 24 h, never dropped. At-least-once: audit-service dedupes on
+`UNIQUE (tenant_id, event_id)`. Keys: `events.attendance.corrected.v1`,
+`events.session.schedule_changed.v1`, `events.certificate.review_flagged.v1`.
+**audit-service's bindings for these keys must be deployed before this service** - a confirm
+proves the broker accepted the message, not that a queue was bound.
 
 ## Structural checks (all write/credential paths)
 
@@ -44,18 +106,16 @@ new attendance path rather than re-deriving them:
   404 for missing/deleted/other-event/other-tenant (same filter as the completion rollup,
   so `isActive:false` sessions stay markable);
 - course registrations have no sessions -> 409 `ATTENDANCE_NOT_SUPPORTED`;
-- attendee-side paths (self route, QR minting, QR redemption) additionally require
+- attendee-side paths (self, pass minting, organiser scan) additionally require
   `isActive && approvalStatus:"approved" && status:"confirmed"` -> else 409
   `REGISTRATION_NOT_ELIGIBLE` (also refuses post-rollup `attended`/`no-show`), and for
   `event.allowPartialAttendance` with non-empty `registration.sessionIds` the session must
-  be one of them -> 403 `SESSION_NOT_SELECTED` (the rollup's exact predicate);
+  be one of them -> 403 `SESSION_NOT_SELECTED` (the rollup's exact predicate), then the time
+  window for that path;
 - the CRM route checks only ids + course + session-belongs-to-event: staff corrections are
   allowed in any registration state (e.g. fixing a no-show after the rollup).
 
-QR tokens are re-validated at redemption, not only at minting (a token minted before a
-cancellation does not write). **There is no attendance time window** (product decision
-pending); until one is agreed an eligible attendee can self-mark any of their own sessions
-at any time - an open certificate-integrity risk.
+Passes are re-validated at scan time, not only at minting.
 
 ## Zoom/Teams online attendance — poll-only, no webhook
 

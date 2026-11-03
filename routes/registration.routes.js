@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const registrationController = require("../controllers/registration.controller.js");
 const checkinController = require("../controllers/checkin.controller.js");
+const studentVerificationController = require("../controllers/studentVerification.controller.js");
 const { defaultPolicyMiddleware } = require("../middlewares/policy.middleware.js");
 const {
   requireCrmUser,
@@ -50,6 +51,14 @@ router.get(
   requireIdentifiedCrmOrPortal,
   requireRegistrationPermission("read"),
   registrationController.getMyRegistrations,
+);
+// P5 organiser scan: the authenticated organiser (CRM + events:write, same tenant - checked in the
+// controller against the pass) records presence; the pass alone never does.
+router.post(
+  "/checkin/scan",
+  requireCrmUser,
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  checkinController.scanCheckinToken,
 );
 router.get(
   "/:id",
@@ -106,12 +115,23 @@ router.put(
   defaultPolicyMiddleware.requirePermission("events", "write"),
   registrationController.rejectRegistration,
 );
+// P5 STUDENT policy: CRM verify/reject of a declared student pricing claim
+// (blocks approval/capture until verified; reject rejects the registration).
+// Same gate as approve/reject - no new permission.
+router.put(
+  "/:id/student-verification",
+  requireCrmUser,
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  studentVerificationController.decideStudentVerification,
+);
 
-// Attendance - QR generation: CRM, or the attendee for their own registration;
-// CRM marking: CRM only; self-marking: PORTAL only (CRM -> 403 PORTAL_ONLY, use
-// the CRM route), ownership-checked inside the controller against
-// submittedByUserId. All three validate the session against the
-// registration's own event (services/attendanceEligibility.service.js).
+// Attendance - pass minting: CRM, or the attendee for their own registration
+// (a pass is shown to the organiser, never self-redeemed); organiser scan:
+// POST /checkin/scan above; CRM marking/correction: CRM only (reason rules +
+// audit in the controller); self-marking: PORTAL only, virtual sessions only
+// (CRM -> 403 PORTAL_ONLY), ownership-checked against submittedByUserId. All
+// validate the session against the registration's own event and the P5 time
+// window (services/attendanceEligibility.service.js).
 router.get(
   "/:id/sessions/:sessionId/checkin-qr",
   requireCrmOrPortalOwner,

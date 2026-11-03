@@ -13,6 +13,7 @@ const {
 const {
   publishRegistrationConfirmed,
 } = require("../rabbitMQ/publishers/registration.events.publisher.js");
+const { assertStudentEligibilityResolved } = require("./studentEligibility.service.js");
 
 /**
  * Atomically claims a pending-review registration for approval processing -
@@ -121,6 +122,10 @@ async function syncApprovedProfileContactDetails({ tenantId, profileId, snap }) 
  * call it without the atomicity guard in place.
  */
 async function finalizeRegistrationApproval({ claimed, decision, candidateProfileId, req, tenantId, reviewerId }) {
+  // P5 STUDENT policy: no Profile write, capture or GL post while a student
+  // pricing claim is unverified or rejected (the caller releases the claim).
+  assertStudentEligibilityResolved(claimed);
+
   const review = claimed.duplicateReview || {};
   let finalProfileId = null;
 
