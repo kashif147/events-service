@@ -1352,6 +1352,9 @@ async function retryRegistrationPayment(req, res, next) {
 
     if (switchingFromManual) {
       // (Only after the binding transition above succeeded - a lost race voids nothing.)
+      // account-service (P5 MANUAL_TO_CARD) already cancels an unposted manual record in the
+      // same atomic update that releases its registration binding to the new card intent, so
+      // this call is now an idempotent confirmation (voided:false when already cancelled).
       // Void the superseded manual/comp/invoice Payment now that a real
       // PaymentIntent has been created to replace it. Best-effort: a failure
       // here must never undo the PaymentIntent creation that already

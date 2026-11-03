@@ -395,6 +395,26 @@ describe("B registration payment binding is set once; replacement is one conditi
     expect([after.paymentId, after.stripePaymentIntentId, after.paymentStatus]).toEqual(["pay-old", "pi_old", "authorized"]);
   });
 
+  it("B6 account fails closed on an ambiguous legacy registration (409 REGISTRATION_BINDING_AMBIGUOUS) -> 409 passthrough, registration unchanged, nothing voided", async () => {
+    const reg = await pendingStripeReg({ paymentMethod: "manual", paymentId: "manual-amb", stripePaymentIntentId: null });
+    createRegistrationPaymentIntent.mockRejectedValue(upstreamError(409, "REGISTRATION_BINDING_AMBIGUOUS"));
+    const r = await retry(reg._id);
+    expect(r.status).toBe(409);
+    expect(r.body.error?.code || r.body.code).toBe("REGISTRATION_BINDING_AMBIGUOUS");
+    expect(voidManualRegistrationPayment).not.toHaveBeenCalled();
+    const after = await Registration.findById(reg._id).lean();
+    expect([after.paymentMethod, after.paymentId, after.stripePaymentIntentId]).toEqual(["manual", "manual-amb", null]);
+  });
+
+  it("B7 an orphaned/losing intent refused by account at attach (409 INTENT_ORPHANED) -> 409, registration rolled back, no secret", async () => {
+    getPaymentByPaymentIntentId.mockResolvedValue(ownPayment());
+    attachRegistrationToPaymentIntent.mockRejectedValue(upstreamError(409, "INTENT_ORPHANED"));
+    const res = await post(portalA(), body({ stripePaymentIntentId: "pi_orphan_1" }));
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(res.body)).not.toMatch(/_secret/);
+    expect(await Registration.countDocuments({ tenantId: TENANT })).toBe(0);
+  });
+
   it("B5 createRegistration never overwrites a binding that appeared concurrently -> 409, registration rolled back", async () => {
     getPaymentByPaymentIntentId.mockResolvedValue(ownPayment());
     attachRegistrationToPaymentIntent.mockImplementation(async ({ registrationId }) => {
