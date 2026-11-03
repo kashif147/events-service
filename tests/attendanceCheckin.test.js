@@ -161,7 +161,7 @@ describe("POST /registrations/:id/sessions/:sessionId/attendance/self", () => {
     expect(reloaded.sessionAttendance[0]).toMatchObject({ status: "attended", method: "manual-attendee" });
   });
 
-  it("404s for a registration the caller didn't submit", async () => {
+  it("403 NOT_OWNER for a registration the caller didn't submit", async () => {
     const event = await createEventDoc();
     const session = await EventSession.create({ tenantId: TENANT_ID, eventId: event._id, label: "Day 1", date: event.startDate });
     const registration = await createRegistrationDoc(event._id, { submittedByUserId: "user-attendee-1" });
@@ -170,7 +170,10 @@ describe("POST /registrations/:id/sessions/:sessionId/attendance/self", () => {
       .post(`/api/registrations/${registration._id}/sessions/${session._id}/attendance/self`)
       .set("Authorization", selfAuthHeader("someone-else"));
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("NOT_OWNER");
+    const reloaded = await Registration.findById(registration._id);
+    expect(reloaded.sessionAttendance).toHaveLength(0);
   });
 });
 

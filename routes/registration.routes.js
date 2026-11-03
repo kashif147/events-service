@@ -7,6 +7,7 @@ const {
   requireCrmUser,
   requireCrmOrPortalOwner,
   requireIdentifiedCrmOrPortal,
+  requirePortalUser,
 } = require("../middlewares/callerClass.mw.js");
 const { requireRegistrationPermission } = require("../middlewares/registrationPermission.mw.js");
 
@@ -17,8 +18,10 @@ const { requireRegistrationPermission } = require("../middlewares/registrationPe
 //      - requireCrmOrPortalOwner: CRM tenant-wide, or a PORTAL caller on a
 //        registration they submitted (submittedByUserId == verified user id,
 //        same binding as /mine) - anything else 403 NOT_OWNER.
-//      - requireIdentifiedCrmOrPortal: self-scoped routes (create, /mine,
-//        attendance/self) - CRM or PORTAL with a verified user id.
+//      - requireIdentifiedCrmOrPortal: self-scoped routes (create, /mine) -
+//        CRM or PORTAL with a verified user id.
+//      - requirePortalUser: attendance/self - PORTAL with a verified user id
+//        only; CRM gets 403 PORTAL_ONLY (CRM uses PUT .../attendance).
 //   2. the PDP permission:
 //      - staff-only routes: events:read/create/write, unchanged.
 //      - portal self-service routes: requireRegistrationPermission(action) -
@@ -105,8 +108,10 @@ router.put(
 );
 
 // Attendance - QR generation: CRM, or the attendee for their own registration;
-// CRM marking: CRM only; self-marking: ownership-checked inside the controller
-// against submittedByUserId (unchanged).
+// CRM marking: CRM only; self-marking: PORTAL only (CRM -> 403 PORTAL_ONLY, use
+// the CRM route), ownership-checked inside the controller against
+// submittedByUserId. All three validate the session against the
+// registration's own event (services/attendanceEligibility.service.js).
 router.get(
   "/:id/sessions/:sessionId/checkin-qr",
   requireCrmOrPortalOwner,
@@ -121,7 +126,7 @@ router.put(
 );
 router.post(
   "/:id/sessions/:sessionId/attendance/self",
-  requireIdentifiedCrmOrPortal,
+  requirePortalUser,
   // Action stays "read" (as before) so the transition fallback is exactly
   // the permission this route required until now.
   requireRegistrationPermission("read"),
