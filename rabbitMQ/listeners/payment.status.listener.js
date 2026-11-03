@@ -4,6 +4,7 @@ const { resolveEventTenant } = require("../eventTenant.js");
 const {
   publishRegistrationConfirmed,
 } = require("../publishers/registration.events.publisher.js");
+const { studentVerificationState } = require("../../services/studentEligibility.service.js");
 
 /**
  * Handles account-service's "payments.events.status.updated.v1" routing key
@@ -89,9 +90,21 @@ async function handlePaymentStatusUpdated(payload, context) {
     // for automatic-capture payments (there are none for events/courses
     // today, but this is left in place rather than assuming it can't happen).
     registration.paymentStatus = "succeeded";
-    registration.status = "confirmed";
-    await registration.save();
-    await publishRegistrationConfirmed(registration, registration.tenantId);
+    // P5 STUDENT policy: a capture that happened outside approval never
+    // confirms a registration whose student pricing claim is unverified or
+    // rejected - it stays pending for CRM follow-up.
+    const studentState = studentVerificationState(registration);
+    if (studentState !== "pending" && studentState !== "rejected") {
+      registration.status = "confirmed";
+      await registration.save();
+      await publishRegistrationConfirmed(registration, registration.tenantId);
+    } else {
+      await registration.save();
+      console.warn("[events-service] StudentVerificationUnresolvedCapture: payment succeeded outside approval; registration left pending", {
+        registrationId: String(registration._id),
+        eventId: payload?.eventId || null,
+      });
+    }
   } else if (status === "requires_capture") {
     // Stripe has authorized (held) the funds. Capture only ever happens via
     // an explicit PUT /:id/approve call (CRM's Add Attendee "Approve now"
