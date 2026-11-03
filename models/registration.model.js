@@ -181,6 +181,11 @@ const RegistrationSchema = new mongoose.Schema(
       enum: ["stripe", "manual", "comp", "invoice"],
       default: "stripe",
     },
+    // P5: set when account-service answered a cancel with "refund_required" - the card payment had
+    // already been captured, so the registration was cancelled/rejected with money still owed back.
+    // A pending refund, never a settled/refunded state; cleared only by the finance refund flow.
+    refundRequired: { type: Boolean, default: false },
+    refundRequiredAt: { type: Date, default: null },
     status: {
       type: String,
       enum: ["pending", "confirmed", "cancelled", "attended", "no-show"],
