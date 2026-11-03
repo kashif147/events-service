@@ -29,7 +29,7 @@ const {
   changedScheduleFields,
   scheduleIsAudited,
   takeReason,
-  reasonRequiredError,
+  reasonGate,
   auditScheduleChange,
 } = require("../services/scheduleChange.service.js");
 
@@ -743,7 +743,9 @@ async function setEventTimezone(req, res, next) {
       return res.status(200).json({ success: true, data: omitProductFields(existing), unchanged: true });
     }
     const audited = existing.timezone != null || (await scheduleIsAudited(existing));
-    if (audited && !reason) return next(reasonRequiredError());
+    const gate = reasonGate({ audited, reason, scope: "event-timezone", tenantId, eventId: existing._id, sessionId: null });
+    if (gate.error) return next(gate.error);
+    const { reasonSource } = gate;
 
     const updated = await withTransaction(async (txn) => {
       const ev = await Event.findOneAndUpdate(
@@ -768,6 +770,7 @@ async function setEventTimezone(req, res, next) {
           scope: "event-timezone",
           changes: { timezone: { from: existing.timezone ?? null, to: timezone } },
           reason,
+          reasonSource,
           actorUserId: userId,
           session: txn,
           correlationId: req.correlationId,
@@ -825,7 +828,9 @@ async function addSession(req, res, next) {
       return next(new AppError("The schedule of a completed or cancelled event cannot be changed", 409, "EVENT_SCHEDULE_LOCKED"));
     }
     const audited = await scheduleIsAudited(event);
-    if (audited && !reason) return next(reasonRequiredError());
+    const gate = reasonGate({ audited, reason, scope: "session-add", tenantId, eventId: event._id, sessionId: null });
+    if (gate.error) return next(gate.error);
+    const { reasonSource } = gate;
 
     try {
       validatePricingTiers(pricingTiers);
@@ -865,6 +870,7 @@ async function addSession(req, res, next) {
           scope: "session-add",
           changes: changedScheduleFields({}, created.toObject()),
           reason,
+          reasonSource,
           actorUserId: userId,
           session: txn,
           correlationId: req.correlationId,
@@ -912,6 +918,7 @@ async function updateSession(req, res, next) {
     const changes = changedScheduleFields(stored, merged);
     const scheduleChanged = Object.keys(changes).length > 0;
     let audited = false;
+    let reasonSource = null;
     if (scheduleChanged) {
       if (event.status === "Completed" || event.status === "Cancelled") {
         return next(new AppError("The schedule of a completed or cancelled event cannot be changed", 409, "EVENT_SCHEDULE_LOCKED"));
@@ -922,7 +929,9 @@ async function updateSession(req, res, next) {
       );
       if (timingError) return next(timingAppError(timingError));
       audited = await scheduleIsAudited(event);
-      if (audited && !reason) return next(reasonRequiredError());
+      const gate = reasonGate({ audited, reason, scope: "session-update", tenantId, eventId: event._id, sessionId: req.params.sessionId });
+      if (gate.error) return next(gate.error);
+      reasonSource = gate.reasonSource;
     }
 
     // Only touch `meeting` when the caller actually sent joinUrl/organizerUpn
@@ -980,6 +989,7 @@ async function updateSession(req, res, next) {
           scope: "session-update",
           changes,
           reason,
+          reasonSource,
           actorUserId: userId,
           session: txn,
           correlationId: req.correlationId,
@@ -1007,7 +1017,9 @@ async function deleteSession(req, res, next) {
     const event = await Event.findOne({ _id: req.params.id, tenantId, isDeleted: { $ne: true } }).lean();
     if (!event) return next(AppError.notFound("Event not found"));
     const audited = await scheduleIsAudited(event);
-    if (audited && !reason) return next(reasonRequiredError());
+    const gate = reasonGate({ audited, reason, scope: "session-delete", tenantId, eventId: event._id, sessionId: req.params.sessionId });
+    if (gate.error) return next(gate.error);
+    const { reasonSource } = gate;
     const session = await withTransaction(async (txn) => {
       const deleted = await EventSession.findOneAndUpdate(
         {
@@ -1028,6 +1040,7 @@ async function deleteSession(req, res, next) {
           scope: "session-delete",
           changes: { isDeleted: { from: false, to: true } },
           reason,
+          reasonSource,
           actorUserId: userId,
           session: txn,
           correlationId: req.correlationId,

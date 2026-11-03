@@ -65,7 +65,34 @@ function reasonRequiredError() {
   );
 }
 
-function auditScheduleChange({ tenantId, eventId, sessionId = null, scope, changes, reason, actorUserId, session, correlationId }) {
+/**
+ * Rollout switch for the reason requirement (SCHEDULE_REASON_MODE, read per call; default "enforce").
+ * "transition" exists only for the window where the deployed CRM predates scheduleChangeReason: an
+ * audited schedule change without a reason is accepted, audited with reasonSource "legacy-client" and
+ * logged (ids only). Any value other than exactly "transition" enforces.
+ */
+function scheduleReasonMode() {
+  return process.env.SCHEDULE_REASON_MODE === "transition" ? "transition" : "enforce";
+}
+
+/**
+ * Gate for an audited schedule change. Unaudited changes need nothing.
+ * @returns {{ error?: AppError, reasonSource: "client"|"legacy-client"|null }}
+ */
+function reasonGate({ audited, reason, scope, tenantId, eventId, sessionId = null }) {
+  if (!audited) return { reasonSource: null };
+  if (reason) return { reasonSource: "client" };
+  if (scheduleReasonMode() !== "transition") return { error: reasonRequiredError(), reasonSource: null };
+  console.warn("[schedule-change] accepted without reason (SCHEDULE_REASON_MODE=transition)", {
+    scope,
+    tenantId: tenantId ? String(tenantId) : null,
+    eventId: eventId ? String(eventId) : null,
+    sessionId: sessionId ? String(sessionId) : null,
+  });
+  return { reasonSource: "legacy-client" };
+}
+
+function auditScheduleChange({ tenantId, eventId, sessionId = null, scope, changes, reason, reasonSource = null, actorUserId, session, correlationId }) {
   return enqueueAudit(
     ROUTING_KEYS.SCHEDULE_CHANGED,
     "sched",
@@ -76,6 +103,7 @@ function auditScheduleChange({ tenantId, eventId, sessionId = null, scope, chang
       sessionId: sessionId ? String(sessionId) : null,
       changes,
       reason,
+      reasonSource: reasonSource || (reason ? "client" : null),
       actorUserId: actorUserId || null,
       occurredAt: new Date().toISOString(),
     },
@@ -83,4 +111,13 @@ function auditScheduleChange({ tenantId, eventId, sessionId = null, scope, chang
   );
 }
 
-module.exports = { SCHEDULE_FIELDS, changedScheduleFields, scheduleIsAudited, takeReason, reasonRequiredError, auditScheduleChange };
+module.exports = {
+  SCHEDULE_FIELDS,
+  changedScheduleFields,
+  scheduleIsAudited,
+  takeReason,
+  reasonRequiredError,
+  scheduleReasonMode,
+  reasonGate,
+  auditScheduleChange,
+};
