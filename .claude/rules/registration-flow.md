@@ -100,6 +100,32 @@ Stripe status) — never create two PaymentIntents for one registration:
   (account-service `POST /api/payments/intents/:id/attach-registration`) instead of creating a
   second PaymentIntent for a payment the payer already authorized.
 
+P5 payer binding: account-service binds every event/course intent to its verified creator
+(`payer`) and the event/course it pays for (`target`), and refuses a `registrationId` on a
+PORTAL caller's intent. So the attach call sends the registration's own binding
+(`entityType`/`entityId` = `event`|`course` + `eventId`|`courseId`, `purpose`, `amount`,
+`currency`), and account-service binds atomically and once: a 409 (`ALREADY_ATTACHED`,
+`TARGET_MISMATCH`, `REGISTRATION_ALREADY_HAS_PAYMENT`, ...) lands in the manual rollback (the
+Registration is deleted, the caller gets the 409). createRegistration also refuses a PORTAL
+intent whose `payer.userId` is another user (403 `NOT_OWNER`) or whose `target` is another
+event/course (400), before attaching. A PORTAL `stripe` registration **without** a
+`stripePaymentIntentId` creates the intent for the event/course (no `registrationId`) and then
+attaches it the same way; only CRM callers create registration-backed intents. Known gap: the
+live portal sends `purpose: "eventRegistration"` (and `metadata.eventId`) for courses too, so
+portal course Stripe registrations fail the purpose check - there is no purpose mapping in
+code to fix this server-side; it needs a portal change (`courseRegistration` + `courseId`).
+
+One payment binding per registration (P5 batch 5): `Registration.paymentId` /
+`stripePaymentIntentId` are written by `bindRegistrationPaymentOnce` (conditional update that
+only matches an unbound registration, or one already bound to the same payment) at creation, so
+a binding that appeared concurrently is a 409 + rollback, never an overwrite. retry-payment is
+the only replacement path: a single conditional transition from the binding it read to the one
+account-service returned (account-service itself allows one active binding per registration -
+`Payment.registrationBinding`); a concurrent change -> 409 `REGISTRATION_PAYMENT_CHANGED`, and
+the superseded manual payment is voided only after the transition succeeded. The portal
+submits all registrations as `registrationType: "event"`, so its intents are correctly
+`eventRegistration` (portal PR #41 makes that one explicit shared mapping).
+
 Either way, capture only ever happens at approval (`finalizeRegistrationApproval` →
 `capturePaymentIntent`); cancel only ever happens at rejection (`cancelPaymentIntent`).
 

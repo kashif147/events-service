@@ -3,6 +3,12 @@
 `rabbitMQ/index.js` binds `events.accounts.events` to the *existing* `accounts.events`
 exchange (routing key `payments.events.status.updated.v1`) rather than a new exchange —
 this service is a consumer of account-service's payment lifecycle, not the owner of it.
+`payment.status.listener.js` only changes a registration when the status is for that
+registration's OWN payment: `data.paymentId == registration.paymentId` or
+`data.paymentIntentId == registration.stripePaymentIntentId` (either key known on both sides
+must agree; no comparable key -> skipped with `PaymentRegistrationMismatch`). account-service
+adds `paymentIntentId` to `payments.events.status.updated.v1` (P5); CRM-created registrations
+before P5 have `paymentId: null` and match on the PaymentIntent id only.
 
 Outbound, `rabbitMQ/publishers/registration.events.publisher.js` publishes registration/
 certificate lifecycle events (`events.registration.created/confirmed/cancelled.v1`,

@@ -12,6 +12,27 @@ const { studentVerificationState } = require("../../services/studentEligibility.
  * this in account-service, mirroring how portal-service already consumes
  * accounts.events for membership application status updates).
  */
+/**
+ * True only when the event's payment is the registration's own: same account-service
+ * Payment id (registration.paymentId) or same Stripe PaymentIntent
+ * (registration.stripePaymentIntentId). Either key, when known on both sides, must agree;
+ * with no comparable key the event is not trusted (fail closed). account-service sends
+ * paymentIntentId on every payments.events.status.updated.v1 (P5); older CRM-created
+ * registrations have no paymentId and rely on it.
+ */
+function paymentMatchesRegistration(registration, data = {}) {
+  const evPaymentId = data.paymentId != null ? String(data.paymentId) : "";
+  const evIntentId = data.paymentIntentId != null ? String(data.paymentIntentId) : "";
+  const regPaymentId = registration.paymentId != null ? String(registration.paymentId) : "";
+  const regIntentId = registration.stripePaymentIntentId ? String(registration.stripePaymentIntentId) : "";
+  if (evPaymentId && regPaymentId && evPaymentId !== regPaymentId) return false;
+  if (evIntentId && regIntentId && evIntentId !== regIntentId) return false;
+  return Boolean(
+    (evPaymentId && regPaymentId && evPaymentId === regPaymentId) ||
+      (evIntentId && regIntentId && evIntentId === regIntentId),
+  );
+}
+
 async function handlePaymentStatusUpdated(payload, context) {
   // Phase A / A2: the event tenant is required and the registration must belong to it. Ownership is
   // never inferred from registrationId alone. Rejections are logged and skipped (no throw - see
@@ -45,6 +66,16 @@ async function handlePaymentStatusUpdated(payload, context) {
   const registration = await Registration.findOne({ _id: registrationId, tenantId });
   if (!registration) {
     console.warn("[events-service] EventTenantRecordMismatch: no registration for this tenant", {
+      registrationId: String(registrationId),
+      eventId: payload?.eventId || null,
+    });
+    return;
+  }
+
+  // P5 payer binding: the status must be for THIS registration's own payment. A Payment
+  // that merely carries this registrationId (another payer's intent) never changes it.
+  if (!paymentMatchesRegistration(registration, data)) {
+    console.warn("[events-service] PaymentRegistrationMismatch: status event is not for this registration's payment, skipping", {
       registrationId: String(registrationId),
       eventId: payload?.eventId || null,
     });
@@ -89,4 +120,4 @@ async function handlePaymentStatusUpdated(payload, context) {
   }
 }
 
-module.exports = { handlePaymentStatusUpdated };
+module.exports = { handlePaymentStatusUpdated, paymentMatchesRegistration };

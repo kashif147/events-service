@@ -21,6 +21,9 @@ const fakeReg = (tenantId, extra = {}) => ({
   approvalStatus: "pending_review",
   paymentStatus: "pending",
   status: "pending",
+  // P5: the event must be for the registration's own payment (see paymentStatus.payerBinding.p5.test.js).
+  paymentId: "pay-1",
+  stripePaymentIntentId: "pi_1",
   save: jest.fn().mockResolvedValue(),
   ...extra,
 });
@@ -32,7 +35,7 @@ const storeWith = (reg) =>
 const evt = (tenantId, data = {}, extra = {}) => ({
   eventId: "evt-1",
   tenantId,
-  data: { registrationId: REG, status: "succeeded", tenantId, ...data },
+  data: { registrationId: REG, paymentId: "pay-1", paymentIntentId: "pi_1", status: "succeeded", tenantId, ...data },
   ...extra,
 });
 
