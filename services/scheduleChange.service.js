@@ -1,0 +1,86 @@
+// P5 audited schedule changes. Session timing and the event timezone drive the attendance window,
+// so once an event is Published or has any registration, changing them needs an explicit reason and
+// is audited (events.session.schedule_changed.v1) in the same transaction as the write. Draft events
+// with no registrations can be edited freely (nothing depends on the window yet).
+const Registration = require("../models/registration.model.js");
+const { AppError } = require("../errors/AppError.js");
+const { ROUTING_KEYS, enqueueAudit } = require("./attendanceAudit.service.js");
+
+const SCHEDULE_FIELDS = Object.freeze([
+  "localDate",
+  "endLocalDate",
+  "startTime",
+  "endTime",
+  "startUtcOffset",
+  "endUtcOffset",
+  "isVirtual",
+  "date",
+]);
+const REASON_MAX = 500;
+
+function normalize(field, v) {
+  if (v === undefined || v === null || v === "") return null;
+  if (field === "date") {
+    const d = v instanceof Date ? v : new Date(v);
+    return Number.isNaN(d.getTime()) ? String(v) : d.toISOString();
+  }
+  return v;
+}
+
+/** Schedule fields whose value differs between `before` (stored) and `after` (merged). */
+function changedScheduleFields(before, after) {
+  const out = {};
+  for (const f of SCHEDULE_FIELDS) {
+    const a = normalize(f, before?.[f]);
+    const b = normalize(f, after?.[f]);
+    if (String(a) !== String(b)) out[f] = { from: a, to: b };
+  }
+  return out;
+}
+
+async function scheduleIsAudited(event) {
+  if (event.status === "Published") return true;
+  return Boolean(await Registration.exists({ tenantId: event.tenantId, eventId: event._id, isDeleted: { $ne: true } }));
+}
+
+/**
+ * Validates/extracts scheduleChangeReason from a body (and deletes it from the body).
+ * @returns {{ reason: string|null, error?: AppError }}
+ */
+function takeReason(body) {
+  const raw = body ? body.scheduleChangeReason : undefined;
+  if (body) delete body.scheduleChangeReason;
+  if (raw == null) return { reason: null };
+  if (typeof raw !== "string" || raw.length > REASON_MAX) {
+    return { reason: null, error: new AppError(`scheduleChangeReason must be text of at most ${REASON_MAX} characters`, 400, "INVALID_REASON") };
+  }
+  return { reason: raw.trim() || null };
+}
+
+function reasonRequiredError() {
+  return new AppError(
+    "A reason is required to change the schedule of a published event or one with registrations",
+    400,
+    "SCHEDULE_CHANGE_REASON_REQUIRED",
+  );
+}
+
+function auditScheduleChange({ tenantId, eventId, sessionId = null, scope, changes, reason, actorUserId, session, correlationId }) {
+  return enqueueAudit(
+    ROUTING_KEYS.SCHEDULE_CHANGED,
+    "sched",
+    tenantId,
+    {
+      scope, // "event-timezone" | "session-add" | "session-update" | "session-delete"
+      eventId: String(eventId),
+      sessionId: sessionId ? String(sessionId) : null,
+      changes,
+      reason,
+      actorUserId: actorUserId || null,
+      occurredAt: new Date().toISOString(),
+    },
+    { session, correlationId },
+  );
+}
+
+module.exports = { SCHEDULE_FIELDS, changedScheduleFields, scheduleIsAudited, takeReason, reasonRequiredError, auditScheduleChange };

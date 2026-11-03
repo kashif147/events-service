@@ -5,6 +5,15 @@ if (process.env.NODE_ENV === "staging") {
   require("dotenv").config({ path: ".env.development" });
 }
 
+// P5: check-in passes need their own dedicated secret - no JWT_SECRET or hard-coded fallback.
+// Fail the boot clearly (the value is never printed) rather than start with a guessable signer.
+try {
+  require("./services/checkinToken.service.js").assertCheckinTokenSecret();
+} catch (err) {
+  console.error(`FATAL: ${err.message}`);
+  throw err;
+}
+
 var createError = require("http-errors");
 var express = require("express");
 
@@ -61,6 +70,8 @@ if (process.env.RABBIT_URL) {
       const { startOnlineAttendanceSyncSweep } = require("./jobs/onlineAttendanceSyncSweep.js");
       startEventCompletionSweep();
       startOnlineAttendanceSyncSweep();
+      // P5 audit outbox relay (confirmed publish of attendance/schedule/certificate-review facts).
+      require("./services/outbox.service.js").startOutboxRelay();
       console.log("✅ RabbitMQ fully initialized with middleware");
     })
     .catch((error) => {
@@ -74,6 +85,7 @@ if (process.env.RABBIT_URL) {
     const { stopOnlineAttendanceSyncSweep } = require("./jobs/onlineAttendanceSyncSweep.js");
     stopEventCompletionSweep();
     stopOnlineAttendanceSyncSweep();
+    require("./services/outbox.service.js").stopOutboxRelay();
     await shutdownEventSystem();
     process.exit(0);
   });
@@ -84,6 +96,7 @@ if (process.env.RABBIT_URL) {
     const { stopOnlineAttendanceSyncSweep } = require("./jobs/onlineAttendanceSyncSweep.js");
     stopEventCompletionSweep();
     stopOnlineAttendanceSyncSweep();
+    require("./services/outbox.service.js").stopOutboxRelay();
     await shutdownEventSystem();
     process.exit(0);
   });

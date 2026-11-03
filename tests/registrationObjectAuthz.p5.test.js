@@ -35,6 +35,8 @@ const { finalizeRegistrationApproval } = require("../services/registrationApprov
 const app = require("../app");
 const Registration = require("../models/registration.model.js");
 const EventSession = require("../models/eventSession.model.js");
+const Event = require("../models/event.model.js");
+const { TZ, sessionTiming } = require("./helpers/attendanceTiming.js");
 
 const TENANT = "tenant-p5-authz-a";
 const OTHER_TENANT = "tenant-p5-authz-c";
@@ -99,14 +101,20 @@ beforeEach(async () => {
   regB = await makeRegistration({ submittedByUserId: USER_B });
   regC = await makeRegistration({ tenantId: OTHER_TENANT, eventId: new mongoose.Types.ObjectId(), submittedByUserId: USER_C });
   regCrmCreated = await makeRegistration({ submittedByUserId: null, registeredVia: "crm" });
-  session = await EventSession.create({ tenantId: TENANT, eventId: regA.eventId, label: "Day 1", date: new Date() });
-  sessionC = await EventSession.create({ tenantId: OTHER_TENANT, eventId: regC.eventId, label: "Day 1", date: new Date() });
+  // P5 window: attendee paths read the event's timezone, so the events must exist; the sessions are
+  // live (now inside the window) and virtual (self route).
+  await Event.create({ _id: EVENT_A, tenantId: TENANT, title: "P5 event", startDate: new Date(), endDate: new Date(), status: "Published", timezone: TZ });
+  await Event.create({ _id: regC.eventId, tenantId: OTHER_TENANT, title: "P5 event C", startDate: new Date(), endDate: new Date(), status: "Published", timezone: TZ });
+  const live = { ...sessionTiming(), isVirtual: true };
+  session = await EventSession.create({ tenantId: TENANT, eventId: regA.eventId, label: "Day 1", date: new Date(), ...live });
+  sessionC = await EventSession.create({ tenantId: OTHER_TENANT, eventId: regC.eventId, label: "Day 1", date: new Date(), ...live });
   resolveLookupNamesByIds.mockResolvedValue(new Map());
 });
 
 afterEach(async () => {
   await Registration.deleteMany({ tenantId: { $in: [TENANT, OTHER_TENANT] } });
   await EventSession.deleteMany({ tenantId: { $in: [TENANT, OTHER_TENANT] } });
+  await Event.deleteMany({ tenantId: { $in: [TENANT, OTHER_TENANT] } });
   jest.clearAllMocks();
 });
 

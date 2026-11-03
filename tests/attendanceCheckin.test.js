@@ -8,12 +8,18 @@ const EventSession = require("../models/eventSession.model.js");
 const Registration = require("../models/registration.model.js");
 const { signCheckinToken } = require("../services/checkinToken.service.js");
 const { completeEventById } = require("../controllers/event.controller.js");
+const { TZ, sessionTiming } = require("./helpers/attendanceTiming.js");
 
 const TENANT_ID = "tenant-attendance-test";
 
 function authHeader() {
   const token = jwt.sign({ sub: "user-1", tenantId: TENANT_ID, userType: "CRM", roles: [] }, process.env.JWT_SECRET);
   return `Bearer ${token}`;
+}
+
+// A session happening now (inside every P5 window); virtual so the self route accepts it.
+function liveSession(event, extra = {}) {
+  return EventSession.create({ tenantId: TENANT_ID, eventId: event._id, label: "Day 1", date: event.startDate, isVirtual: true, ...sessionTiming(), ...extra });
 }
 
 function selfAuthHeader(userId) {
@@ -28,6 +34,7 @@ async function createEventDoc(overrides = {}) {
     startDate: new Date("2020-01-01T09:00:00Z"),
     endDate: new Date("2020-01-01T17:00:00Z"),
     status: "Published",
+    timezone: TZ,
     ...overrides,
   });
 }
@@ -70,7 +77,7 @@ afterAll(async () => {
 describe("GET /registrations/:id/sessions/:sessionId/checkin-qr", () => {
   it("returns a signed token for a real registration+session", async () => {
     const event = await createEventDoc();
-    const session = await EventSession.create({ tenantId: TENANT_ID, eventId: event._id, label: "Day 1", date: event.startDate });
+    const session = await liveSession(event);
     const registration = await createRegistrationDoc(event._id);
 
     const res = await request(app)
@@ -82,34 +89,38 @@ describe("GET /registrations/:id/sessions/:sessionId/checkin-qr", () => {
   });
 });
 
-describe("POST /public/checkin/:token", () => {
-  it("marks attendance on first scan and is idempotent on a repeat scan", async () => {
+describe("organiser scan replaces the public redemption", () => {
+  it("CRM scan marks attendance once and is idempotent on a repeat scan", async () => {
     const event = await createEventDoc();
-    const session = await EventSession.create({ tenantId: TENANT_ID, eventId: event._id, label: "Day 1", date: event.startDate });
+    const session = await liveSession(event);
     const registration = await createRegistrationDoc(event._id);
     const token = signCheckinToken({
       tenantId: TENANT_ID,
       registrationId: String(registration._id),
       sessionId: String(session._id),
+      expiresAt: Date.now() + 3600000,
     });
 
-    const first = await request(app).post(`/api/public/checkin/${token}`);
+    const first = await request(app).post("/api/registrations/checkin/scan").set("Authorization", authHeader()).send({ token });
     expect(first.status).toBe(200);
     expect(first.body.data.alreadyCheckedIn).toBe(false);
 
-    const second = await request(app).post(`/api/public/checkin/${token}`);
+    const second = await request(app).post("/api/registrations/checkin/scan").set("Authorization", authHeader()).send({ token });
     expect(second.status).toBe(200);
     expect(second.body.data.alreadyCheckedIn).toBe(true);
 
     const reloaded = await Registration.findById(registration._id);
     expect(reloaded.sessionAttendance).toHaveLength(1);
     expect(reloaded.sessionAttendance[0].status).toBe("attended");
-    expect(reloaded.sessionAttendance[0].method).toBe("qr");
+    expect(reloaded.sessionAttendance[0].method).toBe("qr-organizer");
   });
 
-  it("rejects an invalid token without authentication", async () => {
+  it("the public link never writes (410) and an invalid pass is a 400 at the scan", async () => {
     const res = await request(app).post("/api/public/checkin/garbage-token");
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(410);
+    const scan = await request(app).post("/api/registrations/checkin/scan").set("Authorization", authHeader()).send({ token: "garbage" });
+    expect(scan.status).toBe(400);
+    expect(scan.body.error.code).toBe("CHECKIN_PASS_INVALID");
   });
 });
 
@@ -121,16 +132,25 @@ describe("PUT /registrations/:id/sessions/:sessionId/attendance (CRM)", () => {
       sessionAttendance: [{ sessionId: session._id, status: "attended", method: "qr", markedAt: new Date() }],
     });
 
-    const res = await request(app)
+    // Overwriting an existing entry needs a reason; the overwritten value is kept.
+    const noReason = await request(app)
       .put(`/api/registrations/${registration._id}/sessions/${session._id}/attendance`)
       .set("Authorization", authHeader())
       .send({ status: "absent" });
+    expect(noReason.status).toBe(400);
+    expect(noReason.body.error.code).toBe("CORRECTION_REASON_REQUIRED");
+
+    const res = await request(app)
+      .put(`/api/registrations/${registration._id}/sessions/${session._id}/attendance`)
+      .set("Authorization", authHeader())
+      .send({ status: "absent", reason: "Left before the session started" });
 
     expect(res.status).toBe(200);
     const reloaded = await Registration.findById(registration._id);
     expect(reloaded.sessionAttendance).toHaveLength(1);
     expect(reloaded.sessionAttendance[0].status).toBe("absent");
     expect(reloaded.sessionAttendance[0].method).toBe("manual-crm");
+    expect(reloaded.sessionAttendance[0].previous).toMatchObject({ status: "attended", method: "qr" });
   });
 
   it("400s on an invalid status value", async () => {
@@ -149,7 +169,7 @@ describe("PUT /registrations/:id/sessions/:sessionId/attendance (CRM)", () => {
 describe("POST /registrations/:id/sessions/:sessionId/attendance/self", () => {
   it("lets the submitting attendee mark their own attendance", async () => {
     const event = await createEventDoc();
-    const session = await EventSession.create({ tenantId: TENANT_ID, eventId: event._id, label: "Day 1", date: event.startDate });
+    const session = await liveSession(event);
     const registration = await createRegistrationDoc(event._id, { submittedByUserId: "user-attendee-1" });
 
     const res = await request(app)

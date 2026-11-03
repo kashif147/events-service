@@ -13,8 +13,15 @@ const EventSessionSchema = new mongoose.Schema(
     },
     label: { type: String, required: true }, // e.g. "Day 1: Opening Keynote"
     date: { type: Date, required: true },
-    startTime: { type: String, default: null }, // "HH:mm", time-of-day only
-    endTime: { type: String, default: null }, // "HH:mm", time-of-day only
+    startTime: { type: String, default: null }, // "HH:mm", time-of-day only (event timezone)
+    endTime: { type: String, default: null }, // "HH:mm", time-of-day only (event timezone)
+    // P5 attendance window. `date` above is NOT a reliable calendar day (the CRM stored browser-local
+    // midnight as a UTC instant), so the window uses these explicit local fields only:
+    localDate: { type: String, default: null }, // "YYYY-MM-DD" in the event timezone
+    endLocalDate: { type: String, default: null }, // overnight sessions; null = same day as localDate
+    // Only for a wall-clock time that occurs twice in the zone (DST fall-back): "+HH:MM"/"-HH:MM".
+    startUtcOffset: { type: String, default: null },
+    endUtcOffset: { type: String, default: null },
     isVirtual: { type: Boolean, default: false }, // per-day in-person/online, for Hybrid event format
     // Online meeting details for this day/session - this is where the
     // CreateEventDrawer/ScheduleManagementDrawer frontend's "zoomLink" field
