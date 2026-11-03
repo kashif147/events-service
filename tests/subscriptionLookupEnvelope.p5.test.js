@@ -25,6 +25,8 @@ function activeSub(over = {}) {
     tenantId: T,
     isCurrent: true,
     subscriptionStatus: "Active",
+    startDate: "2020-01-01T00:00:00.000Z",
+    endDate: "2999-12-31T23:59:59.000Z",
     membershipCategory: "undergraduate_student",
     ...over,
   };
@@ -71,6 +73,17 @@ describe("real envelope", () => {
     ["not current", activeSub({ isCurrent: false })],
     ["not Active", activeSub({ subscriptionStatus: "Cancelled" })],
     ["no profileId", activeSub({ profileId: undefined })],
+    // P5 owner proofs: inactive / expired / incomplete rows and cross-tenant rows never establish membership
+    ["status Lapsed", activeSub({ subscriptionStatus: "Lapsed" })],
+    ["status Suspended", activeSub({ subscriptionStatus: "Suspended" })],
+    ["status Resigned", activeSub({ subscriptionStatus: "Resigned" })],
+    ["status missing", activeSub({ subscriptionStatus: undefined })],
+    ["isCurrent missing", activeSub({ isCurrent: undefined })],
+    ["expired (endDate in the past)", activeSub({ endDate: "2001-01-01T00:00:00.000Z" })],
+    ["endDate missing", activeSub({ endDate: undefined })],
+    ["endDate invalid", activeSub({ endDate: "not-a-date" })],
+    ["tenantId missing on the row", activeSub({ tenantId: undefined })],
+    ["tenantId null on the row", activeSub({ tenantId: null })],
   ])("subscription for %s -> NOT a member", async (_l, sub) => {
     axios.get.mockResolvedValue(envelope(sub));
     expect(await client.getActiveMembership({ profileId: P, tenantId: T })).toEqual(NON_MEMBER);
@@ -97,6 +110,54 @@ describe("real envelope", () => {
 
   test("network / non-2xx error keeps develop behaviour (non-member; fail-closed 503 is a separate change)", async () => {
     axios.get.mockRejectedValue(Object.assign(new Error("boom"), { response: { status: 500 } }));
+    expect(await client.getActiveMembership({ profileId: P, tenantId: T })).toEqual(NON_MEMBER);
+  });
+});
+
+describe("owner proofs (P5 controlled integration)", () => {
+  test("active eligible subscription -> member with its exact category", async () => {
+    for (const cat of ["general", "undergraduate_student", "retired"]) {
+      axios.get.mockResolvedValue(envelope(activeSub({ membershipCategory: cat })));
+      expect(await client.getActiveMembership({ profileId: P, tenantId: T })).toEqual({
+        isActiveMember: true,
+        membershipCategory: cat,
+      });
+    }
+  });
+
+  test("a 200 alone is never membership: success envelope with an empty object -> NOT a member", async () => {
+    axios.get.mockResolvedValue({ status: 200, data: { status: "success", data: { data: {} } } });
+    expect(await client.getActiveMembership({ profileId: P, tenantId: T })).toEqual(NON_MEMBER);
+  });
+
+  test("endDate exactly now is still active; one ms past is expired", () => {
+    const now = new Date("2026-11-03T12:00:00.000Z");
+    const body = (end) => ({ status: "success", data: { data: activeSub({ endDate: end }) } });
+    expect(client.parseCurrentSubscription(body("2026-11-03T12:00:00.000Z"), { profileId: P, tenantId: T, now })).not.toBeNull();
+    expect(client.parseCurrentSubscription(body("2026-11-03T11:59:59.999Z"), { profileId: P, tenantId: T, now })).toBeNull();
+  });
+
+  test("cross-tenant: a row for another tenant answered to tenant T never establishes membership", async () => {
+    axios.get.mockResolvedValue(envelope(activeSub({ tenantId: "6500000000000000000000f9" })));
+    expect(await client.getActiveMembership({ profileId: P, tenantId: T })).toEqual(NON_MEMBER);
+  });
+
+  test.each([
+    ["timeout", Object.assign(new Error("timeout of 15000ms exceeded"), { code: "ECONNABORTED" })],
+    ["connection refused", Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" })],
+    ["401 (mixed identity refused)", Object.assign(new Error("401"), { response: { status: 401 } })],
+    ["400 TENANT_REQUIRED", Object.assign(new Error("400"), { response: { status: 400 } })],
+  ])("service failure (%s) -> fails closed to non-member (develop semantics; #17 turns this into 503)", async (_l, e) => {
+    axios.get.mockRejectedValue(e);
+    expect(await client.getActiveMembership({ profileId: P, tenantId: T })).toEqual(NON_MEMBER);
+  });
+
+  test.each([
+    ["non-JSON string body", { status: 200, data: "<html>ok</html>" }],
+    ["null body", { status: 200, data: null }],
+    ["status success but data is an array", { status: 200, data: { status: "success", data: [activeSub()] } }],
+  ])("malformed response (%s) -> NOT a member", async (_l, response) => {
+    axios.get.mockResolvedValue(response);
     expect(await client.getActiveMembership({ profileId: P, tenantId: T })).toEqual(NON_MEMBER);
   });
 });

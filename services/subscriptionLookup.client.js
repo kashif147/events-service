@@ -36,23 +36,36 @@ function buildHeaders(tenantId) {
 
 const ACTIVE_STATUS = "Active";
 
+function validDate(v) {
+  if (v == null || v === "") return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 /**
  * P5: subscription-service GET /subscriptions/profile/:id/current answers
  *   200 { status: "success", data: { data: <current ACTIVE subscription | null> } }
- * (res.success({ data: sub }) wraps once more). Only a non-null subscription object for THIS profile and
- * tenant, current and Active, counts as membership; any other body - null, an array, the outer wrapper,
- * a different profile or tenant - is "not a member". Exported for tests.
+ * (res.success({ data: sub }) wraps once more). A 200 is never membership by itself: the client
+ * re-checks the documented rule (subscription-service models/subscription.model.js +
+ * controllers/subscription.controller.js getSubscriptionsByProfile: one `isCurrent: true` row per
+ * {tenantId, profileId}, `subscriptionStatus` "Active"; endDate = end of the membership year) on the
+ * returned object itself. Membership needs ALL of: this profile, this tenant (present and equal),
+ * isCurrent === true, subscriptionStatus === "Active", and a valid endDate not in the past. Anything
+ * else - null, an array, the outer wrapper, a missing/other tenant or profile, a missing status or
+ * endDate, an expired or non-Active row - is "not a member" (fail closed). Exported for tests.
  */
-function parseCurrentSubscription(body, { profileId, tenantId }) {
+function parseCurrentSubscription(body, { profileId, tenantId, now = new Date() }) {
   if (!body || typeof body !== "object" || body.status !== "success") return null;
   const outer = body.data;
   if (!outer || typeof outer !== "object" || Array.isArray(outer)) return null;
   const sub = outer.data;
   if (!sub || typeof sub !== "object" || Array.isArray(sub)) return null;
   if (sub.profileId == null || String(sub.profileId) !== String(profileId)) return null;
-  if (sub.tenantId != null && String(sub.tenantId) !== String(tenantId)) return null;
-  if (sub.isCurrent === false) return null;
-  if (sub.subscriptionStatus != null && sub.subscriptionStatus !== ACTIVE_STATUS) return null;
+  if (sub.tenantId == null || String(sub.tenantId) !== String(tenantId)) return null;
+  if (sub.isCurrent !== true) return null;
+  if (sub.subscriptionStatus !== ACTIVE_STATUS) return null;
+  const endDate = validDate(sub.endDate);
+  if (!endDate || endDate.getTime() < now.getTime()) return null;
   return sub;
 }
 
