@@ -1,6 +1,36 @@
 const mongoose = require("mongoose");
 const { tenantOwnershipPlugin } = require("./plugins/tenantOwnership.plugin");
 
+// STUDENT pricing eligibility (P5 STUDENT policy) - see
+// services/studentEligibility.service.js. Recorded at intake whenever a
+// STUDENT/GROUP_STUDENT price is applied; null (absent) on every other
+// registration and on rows created before this field existed.
+//   source verified_membership - the attendee's own active undergraduate-student
+//          membership (subscription-service lookup succeeded); verified by the lookup.
+//   source declared_claim - a portal caller without that membership declared an
+//          institution; status starts "pending" and approval/capture is blocked
+//          until a CRM user verifies it (rejecting it rejects the registration).
+//   source crm_assigned - a CRM operator chose the student tier (staff decision).
+const StudentEligibilitySchema = new mongoose.Schema(
+  {
+    source: {
+      type: String,
+      enum: ["verified_membership", "declared_claim", "crm_assigned"],
+      required: true,
+    },
+    institution: { type: String, default: null, maxlength: 200 },
+    declaredAt: { type: Date, default: null },
+    verification: {
+      status: { type: String, enum: ["pending", "verified", "rejected"], required: true },
+      method: { type: String, enum: ["membership", "crm"], default: null },
+      byUserId: { type: String, default: null },
+      at: { type: Date, default: null },
+      note: { type: String, default: null, maxlength: 500 },
+    },
+  },
+  { _id: false },
+);
+
 const RegistrationSchema = new mongoose.Schema(
   {
     tenantId: { type: String, required: true, index: true },
@@ -59,6 +89,7 @@ const RegistrationSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    studentEligibility: { type: StudentEligibilitySchema, default: null },
     // Nullable until CRM approval resolves/creates the attendee's Profile -
     // see duplicateReview below. Never set directly by createRegistration
     // anymore; only the /approve endpoint writes this.

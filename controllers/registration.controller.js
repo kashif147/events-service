@@ -19,6 +19,12 @@ const {
   updateAttendeeProfileFields,
 } = require("../services/profileLookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
+const {
+  isStudentPriced,
+  resolvePortalStudentEligibility,
+  crmStudentEligibility,
+  withMemberFacingStudentEligibility,
+} = require("../services/studentEligibility.service.js");
 const { resolveLookupNamesByIds } = require("../services/lookup.client.js");
 const {
   determinePriceCategory,
@@ -202,6 +208,10 @@ async function createRegistration(req, res, next) {
       // rather than create a second, separate PaymentIntent for a payment
       // the payer already confirmed - see the stripe branch below.
       stripePaymentIntentId,
+      // PORTAL STUDENT tier without a verified student membership:
+      // { institution } - recorded as a claim a CRM user must verify before
+      // approval/capture (services/studentEligibility.service.js).
+      studentClaim,
     } = req.body || {};
 
     if (!registrationType || !["event", "course"].includes(registrationType)) {
@@ -432,6 +442,7 @@ async function createRegistration(req, res, next) {
       let eventCategoryCode;
       let priceBreakdown = [];
       let seatPriceCategory;
+      let studentEligibility = null;
       if (hasLineItems) {
         if (isPortalCaller) {
           for (const line of lineItems) {
@@ -442,6 +453,12 @@ async function createRegistration(req, res, next) {
             });
             if (reason) throw new AppError(reason, 400, "TIER_NOT_ELIGIBLE");
           }
+          studentEligibility = resolvePortalStudentEligibility({
+            tierLines: lineItems,
+            isActiveMember,
+            membershipCategory,
+            studentClaim,
+          });
         }
         const resolved = await resolveLineItemsAmount({ tenantId, eventId, lineItems });
         amount = resolved.amount;
@@ -460,6 +477,21 @@ async function createRegistration(req, res, next) {
               entity: event,
             })
           : "standard";
+        if (isPortalCaller) {
+          // Auto-derived pricing: GROUP_STUDENT is CRM-only, so a derived
+          // group_student falls back to standard; derived student pricing is
+          // backed by the verified undergraduate-student membership.
+          if (seatPriceCategory === "group_student") {
+            seatPriceCategory = "standard";
+          }
+          if (seatPriceCategory === "student") {
+            studentEligibility = resolvePortalStudentEligibility({
+              tierLines: [{ tierKey: "STUDENT", quantity: seatQuantity }],
+              isActiveMember,
+              membershipCategory,
+            });
+          }
+        }
         const resolved = await resolveAmount({
           tenantId,
           registrationType,
@@ -474,6 +506,10 @@ async function createRegistration(req, res, next) {
         currency = resolved.currency;
         productCode = resolved.productCode;
         eventCategoryCode = resolved.eventCategoryCode;
+      }
+
+      if (!isPortalCaller && isStudentPriced({ priceCategory: seatPriceCategory, priceBreakdown })) {
+        studentEligibility = crmStudentEligibility({ crmUserId: caller.userId, studentClaim });
       }
 
       // Every registration starts pending_review now, regardless of payment
@@ -493,6 +529,7 @@ async function createRegistration(req, res, next) {
         quantity: seatQuantity,
         priceCategory: seatPriceCategory,
         priceBreakdown,
+        studentEligibility,
         profileId: null,
         membershipNumber: candidateMembershipNumber,
         isMemberAtRegistration: isActiveMember,
@@ -625,7 +662,11 @@ async function createRegistration(req, res, next) {
 
       return res.status(201).json({
         success: true,
-        data: { registration, payment: paymentPayload },
+        data: {
+          // Portal callers get the member-facing claim view only (no verifier/staff fields).
+          registration: isPortalCaller ? withMemberFacingStudentEligibility(registration) : registration,
+          payment: paymentPayload,
+        },
       });
     } catch (innerError) {
       // Roll back: don't leave a half-created Registration behind just
@@ -894,7 +935,9 @@ async function getRegistrationById(req, res, next) {
       ? coursesById.get(String(registration.courseId))?.title || null
       : null;
 
-    return res.status(200).json({ success: true, data: enriched });
+    // A PORTAL owner sees only the member-facing student claim fields.
+    const data = isPortalOwnerScoped(req) ? withMemberFacingStudentEligibility(enriched) : enriched;
+    return res.status(200).json({ success: true, data });
   } catch (error) {
     return next(appErrorFromUpstream(error, "Failed to fetch registration"));
   }
@@ -1056,7 +1099,9 @@ async function getMyRegistrations(req, res, next) {
       ? await resolveLookupNamesByIds(eventTypeIds, req, tenantId).catch(() => new Map())
       : new Map();
 
-    let enriched = enrichRegistrationsForProfile(registrations, eventsById, coursesById, sessionsById, eventTypesById);
+    // Self view: member-facing student claim fields only, whoever the caller is.
+    let enriched = enrichRegistrationsForProfile(registrations, eventsById, coursesById, sessionsById, eventTypesById)
+      .map(withMemberFacingStudentEligibility);
 
     if (["past", "current", "upcoming"].includes(timing)) {
       enriched = enriched.filter((reg) => reg.timing === timing);
@@ -1086,7 +1131,8 @@ async function cancelRegistration(req, res, next) {
 
     await publishRegistrationCancelled(registration, tenantId);
 
-    return res.status(200).json({ success: true, data: registration });
+    const data = isPortalOwnerScoped(req) ? withMemberFacingStudentEligibility(registration) : registration;
+    return res.status(200).json({ success: true, data });
   } catch (error) {
     return next(appErrorFromUpstream(error, "Failed to cancel registration"));
   }
