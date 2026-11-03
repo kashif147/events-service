@@ -108,9 +108,12 @@ describe("real envelope", () => {
     });
   });
 
-  test("network / non-2xx error keeps develop behaviour (non-member; fail-closed 503 is a separate change)", async () => {
+  test("network / non-2xx error -> 503 MEMBERSHIP_LOOKUP_FAILED (STUDENT fail-closed: never non-member)", async () => {
     axios.get.mockRejectedValue(Object.assign(new Error("boom"), { response: { status: 500 } }));
-    expect(await client.getActiveMembership({ profileId: P, tenantId: T })).toEqual(NON_MEMBER);
+    await expect(client.getActiveMembership({ profileId: P, tenantId: T })).rejects.toMatchObject({
+      status: 503,
+      code: "MEMBERSHIP_LOOKUP_FAILED",
+    });
   });
 });
 
@@ -147,9 +150,12 @@ describe("owner proofs (P5 controlled integration)", () => {
     ["connection refused", Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" })],
     ["401 (mixed identity refused)", Object.assign(new Error("401"), { response: { status: 401 } })],
     ["400 TENANT_REQUIRED", Object.assign(new Error("400"), { response: { status: 400 } })],
-  ])("service failure (%s) -> fails closed to non-member (develop semantics; #17 turns this into 503)", async (_l, e) => {
+  ])("service failure (%s) -> fails closed with 503 MEMBERSHIP_LOOKUP_FAILED (never membership, never silently non-member)", async (_l, e) => {
     axios.get.mockRejectedValue(e);
-    expect(await client.getActiveMembership({ profileId: P, tenantId: T })).toEqual(NON_MEMBER);
+    await expect(client.getActiveMembership({ profileId: P, tenantId: T })).rejects.toMatchObject({
+      status: 503,
+      code: "MEMBERSHIP_LOOKUP_FAILED",
+    });
   });
 
   test.each([

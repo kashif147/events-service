@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const registrationController = require("../controllers/registration.controller.js");
 const checkinController = require("../controllers/checkin.controller.js");
+const studentVerificationController = require("../controllers/studentVerification.controller.js");
 const { defaultPolicyMiddleware } = require("../middlewares/policy.middleware.js");
 const {
   requireCrmUser,
@@ -105,6 +106,15 @@ router.put(
   requireCrmUser,
   defaultPolicyMiddleware.requirePermission("events", "write"),
   registrationController.rejectRegistration,
+);
+// P5 STUDENT policy: CRM verify/reject of a declared student pricing claim
+// (blocks approval/capture until verified; reject rejects the registration).
+// Same gate as approve/reject - no new permission.
+router.put(
+  "/:id/student-verification",
+  requireCrmUser,
+  defaultPolicyMiddleware.requirePermission("events", "write"),
+  studentVerificationController.decideStudentVerification,
 );
 
 // Attendance - QR generation: CRM, or the attendee for their own registration;
