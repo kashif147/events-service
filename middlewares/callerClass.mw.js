@@ -41,6 +41,28 @@ function requireCrmUser(req, res, next) {
 }
 
 /**
+ * Attendee-only: userType PORTAL with a non-empty verified user id, then the
+ * route's existing PDP permission. Used by POST .../attendance/self - a CRM
+ * caller there would store a staff action as a "manual-attendee"
+ * self-attestation with no markedBy, so CRM gets 403 and must use the CRM
+ * attendance route (PUT .../attendance, events:write, method "manual-crm").
+ */
+function requirePortalUser(req, res, next) {
+  const userType = getVerifiedUserType(req);
+  if (userType === CRM) {
+    return deny(res, "PORTAL_ONLY", "CRM users must record attendance through the CRM attendance route");
+  }
+  if (userType !== PORTAL) {
+    return deny(res, "FORBIDDEN_CALLER", "Caller type is not permitted for this operation");
+  }
+  const userId = getVerifiedUserId(req);
+  if (!userId) return denyNotOwner(res);
+  // Captured before the PDP runs (see requireIdentifiedCrmOrPortal).
+  req.verifiedCaller = { userType, userId };
+  return next();
+}
+
+/**
  * CRM (tenant-scoped, as before) or a PORTAL caller acting on their OWN
  * registration. For PORTAL, req.registrationOwnerUserId is set to the
  * verified user id; controllers must add it to their query as
@@ -64,7 +86,7 @@ function requireCrmOrPortalOwner(req, res, next) {
 }
 
 /**
- * Self-scoped routes (GET /mine, POST .../attendance/self, POST / create):
+ * Self-scoped routes (GET /mine, POST / create):
  * CRM or PORTAL with a non-empty verified user id. The controller scopes by
  * that id (submittedByUserId) - an empty id must never reach the query,
  * since submittedByUserId defaults to null on CRM-created rows.
@@ -113,6 +135,7 @@ module.exports = {
   getVerifiedUserType,
   getVerifiedUserId,
   requireCrmUser,
+  requirePortalUser,
   requireIdentifiedCrmOrPortal,
   requireCrmOrPortalOwner,
   ownerScopedRegistrationQuery,

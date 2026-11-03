@@ -356,25 +356,38 @@ const selfRoutes = [
     method: "get",
     action: "write",
     path: (r) => `/api/registrations/${r._id}/sessions/${session._id}/checkin-qr`,
+    // attendance routes require an eligible (approved + confirmed) registration
+    attendance: true,
   },
   {
     name: "POST /registrations/:id/sessions/:sessionId/attendance/self",
     method: "post",
     action: "read",
     path: (r) => `/api/registrations/${r._id}/sessions/${session._id}/attendance/self`,
-    // self-scoped by construction: another member's id is a 404 (as before), never a write
-    otherStatus: 404,
+    attendance: true,
+    // PORTAL-only (P5 B3): CRM gets 403 PORTAL_ONLY before any PDP call and
+    // must use PUT .../attendance; another member's id is 403 NOT_OWNER.
+    portalOnly: true,
   },
 ];
 
-async function expectRegUntouched(reg) {
+async function expectRegUntouchedWithStatus(reg, status = "pending") {
   const fresh = await Registration.findById(reg._id).lean();
-  expect(fresh.status).toBe("pending");
+  expect(fresh.status).toBe(status);
   expect(fresh.isActive).toBe(true);
   expect(fresh.sessionAttendance).toHaveLength(0);
 }
 
 describe.each(selfRoutes)("self-service $name", (route) => {
+  const expectedStatus = route.attendance ? "confirmed" : "pending";
+  const expectRegUntouched = (reg) => expectRegUntouchedWithStatus(reg, expectedStatus);
+  beforeEach(async () => {
+    if (!route.attendance) return;
+    await Registration.updateMany(
+      { _id: { $in: [regA._id, regB._id, regC._id] } },
+      { $set: { status: "confirmed", approvalStatus: "approved" } },
+    );
+  });
   const newPerm = `registrations:${route.action}`;
   const legacyPerm = `events:${route.action}`;
 
@@ -442,6 +455,14 @@ describe.each(selfRoutes)("self-service $name", (route) => {
 
   it("CRM: events:<action> via the policy middleware only - registrations:* never evaluated, no fallback", async () => {
     const res = await send(route.method, route.path(regB), crm());
+    if (route.portalOnly) {
+      // PORTAL-only route: CRM is refused by caller class, the PDP is never consulted.
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe("PORTAL_ONLY");
+      expect(defaultPolicyMiddleware.calls).toEqual([]);
+      await expectRegUntouched(regB);
+      return;
+    }
     expect(defaultPolicyMiddleware.calls).toEqual([legacyPerm]);
     expect([401, 403]).not.toContain(res.status);
   });
@@ -449,8 +470,8 @@ describe.each(selfRoutes)("self-service $name", (route) => {
   it("CRM without events:<action> -> 403 (no fallback for CRM)", async () => {
     const res = await send(route.method, route.path(regB), crm(), { headers: { "x-test-pdp-deny": legacyPerm } });
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe("PERMISSION_DENIED");
-    expect(defaultPolicyMiddleware.calls).toEqual([legacyPerm]);
+    expect(res.body.code).toBe(route.portalOnly ? "PORTAL_ONLY" : "PERMISSION_DENIED");
+    expect(defaultPolicyMiddleware.calls).toEqual(route.portalOnly ? [] : [legacyPerm]);
     await expectRegUntouched(regB);
   });
 
