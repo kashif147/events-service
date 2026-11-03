@@ -15,6 +15,10 @@ const {
 } = require("../rabbitMQ/publishers/registration.events.publisher.js");
 const { assertStudentEligibilityResolved } = require("./studentEligibility.service.js");
 
+// A "processing" claim older than this is treated as abandoned (the claiming request died before it
+// could finish or release). Only the same decision may take it over - see claimRegistrationForApproval.
+const APPROVAL_CLAIM_STALE_MS = 10 * 60 * 1000;
+
 /**
  * Atomically claims a pending-review registration for approval processing -
  * the {approvalStatus:"pending_review"} -> "processing" transition is what
@@ -24,9 +28,25 @@ const { assertStudentEligibilityResolved } = require("./studentEligibility.servi
  * null if the registration wasn't in pending_review (already claimed,
  * approved, or rejected).
  */
-async function claimRegistrationForApproval({ id, tenantId, actorUserId = null, action = "approve" }) {
+async function claimRegistrationForApproval({ id, tenantId, actorUserId = null, action = "approve", now = new Date() }) {
   return Registration.findOneAndUpdate(
-    { _id: id, tenantId, approvalStatus: "pending_review" },
+    {
+      _id: id,
+      tenantId,
+      $or: [
+        { approvalStatus: "pending_review" },
+        // P5 S2 recovery: a process that died between claiming and releasing (no catch ran) left
+        // the registration in "processing". The SAME decision may take its own claim over once it
+        // is stale, so re-running that action is the recovery path; the opposite decision never
+        // can (it still gets "not awaiting approval"). Safe to re-run: the payment command is
+        // state-idempotent on account's side (deterministic key; capture/post/void/cancel replay).
+        {
+          approvalStatus: "processing",
+          "paymentDecision.action": action,
+          "paymentDecision.claimedAt": { $lte: new Date(now.getTime() - APPROVAL_CLAIM_STALE_MS) },
+        },
+      ],
+    },
     {
       $set: {
         approvalStatus: "processing",
@@ -281,6 +301,7 @@ async function finalizeRegistrationApproval({ claimed, decision, candidateProfil
 }
 
 module.exports = {
+  APPROVAL_CLAIM_STALE_MS,
   claimRegistrationForApproval,
   releaseRegistrationClaim,
   finalizeRegistrationApproval,
