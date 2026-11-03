@@ -7,6 +7,8 @@ const Registration = require("../models/registration.model.js");
 const { AppError } = require("../errors/AppError.js");
 const { resolveEventCategoryLookup } = require("../services/lookup.client.js");
 const { getActiveMembership } = require("../services/subscriptionLookup.client.js");
+const { getCallerOwnProfile } = require("../services/profileLookup.client.js");
+const { CRM, PORTAL, getVerifiedUserType } = require("../middlewares/callerClass.mw.js");
 const {
   determinePriceCategory,
   resolveUnitPriceForEntity,
@@ -196,7 +198,6 @@ async function getEventById(req, res, next) {
 async function getEventPriceQuote(req, res, next) {
   try {
     const { tenantId } = req.ctx;
-    const { profileId } = req.query;
     const quantity = req.query.quantity != null ? Number(req.query.quantity) : 1;
     if (!Number.isInteger(quantity) || quantity < 1) {
       return next(AppError.badRequest("quantity must be a positive integer"));
@@ -209,10 +210,30 @@ async function getEventPriceQuote(req, res, next) {
     }).lean();
     if (!event) return next(AppError.notFound("Event not found"));
 
+    // The quote returns isActiveMember/membershipCategory, so the profile it is
+    // computed for must be one the caller may know about (P5). CRM staff keep
+    // quoting any attendee of their tenant (?profileId=). A PORTAL caller is
+    // always quoted for their OWN profile, resolved from the verified identity
+    // (the client-supplied profileId is ignored, as in createRegistration);
+    // any other caller type is quoted as a non-member.
+    const userType = getVerifiedUserType(req);
+    let profileId = null;
+    if (userType === CRM) {
+      profileId = req.query.profileId || null;
+    } else if (userType === PORTAL) {
+      try {
+        const ownProfile = await getCallerOwnProfile(req);
+        profileId = ownProfile ? ownProfile.profileId : null;
+      } catch (lookupError) {
+        return next(
+          new AppError("Unable to verify your profile right now. Please try again.", 503, "PROFILE_LOOKUP_FAILED"),
+        );
+      }
+    }
+
     const { isActiveMember, membershipCategory } = await getActiveMembership({
-      profileId: profileId || null,
+      profileId,
       tenantId,
-      req,
     });
 
     const priceCategory = determinePriceCategory({
