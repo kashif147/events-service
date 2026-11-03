@@ -423,7 +423,7 @@ describe("a capture outside approval never confirms an unverified claim", () => 
     const reg = await makeRegistration({ studentEligibility: pendingClaim() });
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     await handlePaymentStatusUpdated(
-      { eventId: "evt-1", tenantId: TENANT, data: { registrationId: String(reg._id), status: "succeeded", tenantId: TENANT } },
+      { eventId: "evt-1", tenantId: TENANT, data: { registrationId: String(reg._id), paymentIntentId: reg.stripePaymentIntentId, status: "succeeded", tenantId: TENANT } },
       { headers: { "x-tenant-id": TENANT } },
     );
     warn.mockRestore();
