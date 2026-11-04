@@ -178,9 +178,7 @@ async function createRegistrationPaymentIntent({
   entityType,
   entityId,
 }) {
-  const response = await axios.post(
-    `${ACCOUNT_SERVICE_URL}/api/payments/intents`,
-    {
+  const body = {
       tenantId,
       // P5 payer binding: account-service refuses a registrationId on a PORTAL caller's
       // intent; PORTAL callers send the event/course (entityType/entityId) instead and the
@@ -213,9 +211,39 @@ async function createRegistrationPaymentIntent({
       purpose, // "eventRegistration" | "courseRegistration"
       ledgerDomain: "events",
       source: "events-service",
-    },
+    };
+  // P5 S3 (intent_registration): in bound mode a REGISTRATION-BACKED create (CRM add-attendee card
+  // branch, CRM retry-payment) is a signed internal S2S call - the same transport as the five bound
+  // commands. account-service evaluates the intent_registration signature only on the internal path
+  // without a user token (serviceAuth.middleware.js createIntentRegistrationServiceAuth), so the user
+  // token is NOT forwarded here (sending both would skip the verifier, and x-user-* without a token is
+  // 401 UNVERIFIED_IDENTITY). The PORTAL branch (no registrationId) keeps forwarding the member's
+  // identity: account binds a portal intent to the verified payer and refuses a registrationId from it.
+  if (registrationId && paymentCommandMode() === "bound") {
+    return sendSignedRegistrationIntentCreate({ req, tenantId, body });
+  }
+  const response = await axios.post(
+    `${ACCOUNT_SERVICE_URL}/api/payments/intents`,
+    body,
     { headers: buildHeaders(req, tenantId), timeout: 15000 },
   );
+  return response.data?.data;
+}
+
+/**
+ * Signed internal POST /api/payments/intents for a registration-backed intent (account operation
+ * intent_registration, caller events-service, domain registration). Body unchanged from the user-path
+ * request; no Idempotency-Key (the create never sent one - account's attempt reuse/supersede handles a
+ * repeat), so the signed idem field is "". Signing keys absent -> sent unsigned with the one-per-process
+ * [svc-sign] warning (account report mode logs result=unsigned; enforce refuses it). Errors propagate
+ * exactly as on the user path (the call sites roll back / map the upstream error).
+ */
+async function sendSignedRegistrationIntentCreate({ req, tenantId, body }) {
+  const url = `${internalAccountBase()}/api/payments/intents`;
+  const headers = buildInternalCommandHeaders(req, tenantId);
+  const raw = JSON.stringify(body);
+  Object.assign(headers, signatureHeaders({ method: "POST", url, tenant: headers["x-tenant-id"], idem: "", raw }));
+  const response = await axios.post(url, body, { headers, timeout: 15000, transformRequest: [() => raw] });
   return response.data?.data;
 }
 
