@@ -160,3 +160,57 @@ test("the signer never writes the secret or signature to the console", async () 
   expect(text).not.toContain(SECRET);
   expect(text).not.toContain(sig);
 });
+
+describe("degrade / misconfiguration logging (report-mode rollout)", () => {
+  let warn;
+  let error;
+  beforeEach(() => {
+    S.resetUnconfiguredWarning();
+    warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    error = jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  test("keys absent: every bound command is still sent, unsigned; one warning per process naming the caller only", async () => {
+    delete process.env.ACCOUNT_SIGNING_KID;
+    delete process.env.ACCOUNT_SIGNING_SECRET;
+    for (const [, run] of CALLS) await run();
+    for (const [, run] of CALLS) await run();
+    expect(post).toHaveBeenCalledTimes(CALLS.length * 2);
+    for (const call of post.mock.calls) {
+      expect(Object.keys(call[2].headers).filter((k) => k.startsWith("x-svc-"))).toEqual([]);
+    }
+    const lines = warn.mock.calls.map((a) => a.join(" ")).filter((l) => l.startsWith("[svc-sign]"));
+    expect(lines).toEqual(["[svc-sign] account command signing not configured; sending unsigned caller=events-service"]);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  test("keys present: every bound command carries all six x-svc-* headers and nothing is logged", async () => {
+    for (const [, run] of CALLS) await run();
+    expect(post).toHaveBeenCalledTimes(CALLS.length);
+    for (const call of post.mock.calls) {
+      expect(Object.keys(call[2].headers).filter((k) => k.startsWith("x-svc-")).sort()).toEqual(
+        ["x-svc-caller", "x-svc-kid", "x-svc-nonce", "x-svc-sig", "x-svc-ts", "x-svc-version"],
+      );
+      expect(call[2].headers["x-svc-caller"]).toBe("events-service");
+      expect(verifySent(call)).toBe(true);
+    }
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  test("misconfigured: refusal is logged with a reason code only - never the kid or secret value", async () => {
+    process.env.ACCOUNT_SIGNING_KID = "kid-value-sentinel";
+    process.env.ACCOUNT_SIGNING_SECRET = "short-secret-sentinel";
+    await expect(CALLS[0][1]()).rejects.toMatchObject({ code: "ACCOUNT_SIGNING_MISCONFIGURED" });
+    process.env.ACCOUNT_SIGNING_KID = "bad kid sentinel";
+    process.env.ACCOUNT_SIGNING_SECRET = SECRET;
+    await expect(CALLS[0][1]()).rejects.toMatchObject({ code: "ACCOUNT_SIGNING_MISCONFIGURED" });
+    expect(post).not.toHaveBeenCalled();
+    expect(error.mock.calls.map((a) => a.join(" "))).toEqual([
+      "[svc-sign] account command signing misconfigured caller=events-service reason=secret_length",
+      "[svc-sign] account command signing misconfigured caller=events-service reason=kid_format",
+    ]);
+    const text = JSON.stringify([...error.mock.calls, ...warn.mock.calls]);
+    for (const v of ["kid-value-sentinel", "short-secret-sentinel", "bad kid sentinel", SECRET]) expect(text).not.toContain(v);
+  });
+});

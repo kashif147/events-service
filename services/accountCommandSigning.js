@@ -14,7 +14,10 @@
  * each as `<name>=<utf8 byte length>:<value>`, joined with "\n". sig = base64url(HMAC-SHA256).
  *
  * Config (this service's own env file only): ACCOUNT_SIGNING_KID, ACCOUNT_SIGNING_SECRET.
- * Not configured -> no signature headers (rollout R0). Configured but invalid -> fail closed.
+ * Not configured -> no signature headers (rollout R0); one warning per process:
+ *   [svc-sign] account command signing not configured; sending unsigned caller=<this service>
+ * Configured but invalid -> fail closed; each refusal logs (reason only, never a value):
+ *   [svc-sign] account command signing misconfigured caller=<this service> reason=kid_format|secret_length
  * A retry of the same business command signs again with a fresh nonce and the same
  * Idempotency-Key. Never logs the secret, signature or payload.
  */
@@ -57,12 +60,26 @@ function signCanonical(secret, canonical) {
   return crypto.createHmac("sha256", secret).update(canonical, "utf8").digest("base64url");
 }
 
+let warnedUnconfigured = false;
+/** Test hook: re-arm the once-per-process "not configured" warning. */
+function resetUnconfiguredWarning() {
+  warnedUnconfigured = false;
+}
+
 /** Returns { kid, secret } or null when signing is not configured; throws when misconfigured. */
 function signingConfig(env = process.env) {
   const kid = String(env.ACCOUNT_SIGNING_KID || "").trim();
   const secret = String(env.ACCOUNT_SIGNING_SECRET || "");
-  if (!kid && !secret) return null;
+  if (!kid && !secret) {
+    if (!warnedUnconfigured) {
+      warnedUnconfigured = true;
+      console.warn(`[svc-sign] account command signing not configured; sending unsigned caller=${CALLER}`);
+    }
+    return null;
+  }
   if (!KID_RE.test(kid) || secret.length < MIN_SECRET_LENGTH) {
+    const reason = !KID_RE.test(kid) ? "kid_format" : "secret_length";
+    console.error(`[svc-sign] account command signing misconfigured caller=${CALLER} reason=${reason}`);
     throw new AppError("Account command signing is misconfigured.", 503, "ACCOUNT_SIGNING_MISCONFIGURED");
   }
   return { kid, secret };
@@ -114,5 +131,6 @@ module.exports = {
   signCanonical,
   signingConfig,
   signatureHeaders,
+  resetUnconfiguredWarning,
   targetOf,
 };
