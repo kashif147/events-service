@@ -352,8 +352,8 @@ describe("admin routes: CRM + permission effects, tenant-scoped", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. Portal self-service registration routes -> registrations:<action>,
-//    legacy events:<action> fallback during transition; CRM keeps events:*.
+// 2. Portal self-service registration routes -> registrations:<action>; the legacy
+//    events:<action> fallback is OFF (P8 retirement step 1); CRM keeps events:*.
 // ---------------------------------------------------------------------------
 const selfRoutes = [
   { name: "GET /registrations/:id", method: "get", action: "read", path: (r) => `/api/registrations/${r._id}` },
@@ -405,11 +405,13 @@ describe.each(selfRoutes)("self-service $name", (route) => {
   });
 
   it.each(["UNKNOWN_RESOURCE", "INSUFFICIENT_RESOURCE_PERMISSION", "MISSING_PERMISSION", "PERMISSION_NOT_DEFINED"])(
-    "PORTAL owner, new permission absent (%s), legacy events:<action> held -> 200 via transition fallback",
+    "PORTAL owner, new permission absent (%s), legacy events:<action> held -> 403, fallback retired (legacy never evaluated), untouched",
     async (reason) => {
       const res = await send(route.method, route.path(regA), portalA({ pdpDeny: [newPerm], pdpReason: reason }));
-      expect(res.status).toBe(200);
-      expect(defaultPolicyMiddleware.calls).toEqual([newPerm, legacyPerm]);
+      expect(res.status).toBe(403);
+      expect(res.body.reason).toBe(reason);
+      expect(defaultPolicyMiddleware.calls).toEqual([newPerm]);
+      await expectRegUntouched(regA);
     },
   );
 
@@ -432,19 +434,18 @@ describe.each(selfRoutes)("self-service $name", (route) => {
     await expectRegUntouched(regA);
   });
 
-  it("PORTAL owner with neither permission -> 403 PERMISSION_DENIED, untouched", async () => {
+  it("PORTAL owner with neither permission -> 403 PERMISSION_DENIED, only the new permission evaluated, untouched", async () => {
     const res = await send(route.method, route.path(regA), portalA({ pdpDeny: [newPerm, legacyPerm] }));
     expect(res.status).toBe(403);
     expect(res.body.code).toBe("PERMISSION_DENIED");
-    expect(defaultPolicyMiddleware.calls).toEqual([newPerm, legacyPerm]);
+    expect(defaultPolicyMiddleware.calls).toEqual([newPerm]);
     await expectRegUntouched(regA);
   });
 
-  it("the fallback evaluates the EXACT legacy action, never another one", async () => {
-    const other = route.action === "read" ? "write" : "read";
+  it("no legacy events:* action is ever evaluated for a PORTAL caller", async () => {
     const res = await send(route.method, route.path(regA), portalA({ pdpDeny: [newPerm, legacyPerm] }));
     expect(res.status).toBe(403);
-    expect(defaultPolicyMiddleware.calls).not.toContain(`events:${other}`);
+    expect(defaultPolicyMiddleware.calls.filter((c) => c.startsWith("events:"))).toEqual([]);
   });
 
   it("PORTAL A (holding both permissions) on B, same tenant -> denied, untouched", async () => {
@@ -500,10 +501,11 @@ describe("GET /registrations/mine", () => {
     expect(defaultPolicyMiddleware.calls).toEqual(["registrations:read"]);
   });
 
-  it("PORTAL with only legacy events:read (new absent) -> 200 via fallback", async () => {
+  it("PORTAL with only legacy events:read (new absent) -> 403, fallback retired (events:read never evaluated)", async () => {
     const res = await send("get", "/api/registrations/mine", portalA({ pdpDeny: ["registrations:read"] }));
-    expect(res.status).toBe(200);
-    expect(defaultPolicyMiddleware.calls).toEqual(["registrations:read", "events:read"]);
+    expect(res.status).toBe(403);
+    expect(defaultPolicyMiddleware.calls).toEqual(["registrations:read"]);
+    expect(getCallerOwnProfile).not.toHaveBeenCalled();
   });
 
   it("PORTAL with neither -> 403", async () => {
@@ -543,6 +545,16 @@ describe("requireRegistrationPermission / evaluatePermission (unit)", () => {
     });
   }
   const portalReq = (pdp) => ({ user: { userType: "PORTAL" }, headers: { authorization: portalA(pdp) } });
+
+  it("production default: the fallback constant is OFF (P8 retirement step 1)", () => {
+    expect(require("../middlewares/registrationPermission.mw.js").LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK).toBe(false);
+  });
+
+  it("rollback seam (legacyFallback: true) still re-evaluates only the EXACT legacy action on an absence reason", async () => {
+    const mw = requireRegistrationPermission("read", { legacyFallback: true });
+    expect(await run(mw, portalReq({ pdpDeny: ["registrations:read"] }))).toEqual({ status: "next" });
+    expect(defaultPolicyMiddleware.calls).not.toContain("events:write");
+  });
 
   it("fallback switched off: PORTAL needs registrations:<action> (the 'pass without fallback' retirement check)", async () => {
     const mw = requireRegistrationPermission("read", { legacyFallback: false });
@@ -697,13 +709,13 @@ describe("POST /registrations - PORTAL identity is the verified caller", () => {
     expect(getCallerOwnProfile).not.toHaveBeenCalled();
   });
 
-  it("permissions: PORTAL registrations:create -> 201; legacy events:create only -> 201; neither -> 403", async () => {
+  it("permissions: PORTAL registrations:create -> 201; legacy events:create only -> 403 (fallback retired); neither -> 403", async () => {
     let res = await send("post", "/api/registrations", portalA({ pdpDeny: ["events:create"] }), { body: createBody() });
     expect(res.status).toBe(201);
     res = await send("post", "/api/registrations", portalA({ pdpDeny: ["registrations:create"] }), {
       body: createBody(),
     });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(403);
     res = await send("post", "/api/registrations", portalA({ pdpDeny: ["registrations:create", "events:create"] }), {
       body: createBody(),
     });

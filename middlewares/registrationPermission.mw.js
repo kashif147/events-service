@@ -33,8 +33,14 @@ const { defaultPolicyMiddleware } = require("./policy.middleware.js");
  *   4. token issuance is proven to carry the new registrations:* permissions;
  *   5. the registration regression tests pass with the fallback disabled
  *      (tests/eventsAdminRegistrationsAuthz.p5b2.test.js runs that variant).
+ *
+ * P8 (step 1 of the retirement): OFF. A PORTAL caller now needs
+ * registrations:<action> itself; a missing permission is a 403 and the legacy
+ * events:<action> is never evaluated. The branch below stays (unreachable in
+ * production) only so this flag is a one-line rollback; deleting it and this
+ * constant is step 2, after the owner accepts step 1.
  */
-const LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK = true;
+const LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK = false;
 
 /**
  * PDP deny reasons (user-service services/policyEvaluationService.js) that mean
