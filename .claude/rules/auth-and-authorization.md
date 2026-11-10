@@ -51,20 +51,17 @@ caller-class/ownership gate:
 - PORTAL → `registrations:<action>` (codes `REGISTRATIONS_CREATE/READ/WRITE`), evaluated
   directly by `evaluatePermission(req, resource, action)` — the same policy client the
   middleware uses (`evaluateWithHeaders` for gateway headers, `evaluatePolicy` for a Bearer),
-  with the trusted user/tenant only, never body/query. **TRANSITION:** only when the PDP's deny
-  reason says the new permission is *absent* — `UNKNOWN_RESOURCE`,
-  `INSUFFICIENT_RESOURCE_PERMISSION`, `MISSING_PERMISSION`, `PERMISSION_NOT_DEFINED`
-  (`LEGACY_FALLBACK_ABSENT_REASONS`) — is the exact legacy `events:<action>` evaluated. Any
-  other reason (token/tenant failures, `POLICY_SERVICE_ERROR`, evaluation errors/timeouts)
-  fails closed with no fallback. On PERMIT it sets `req.policyContext`/`req.user`/`req.userId`/
-  `req.tenantId` like the middleware. No fallback ever applies to CRM or admin routes.
-  `LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK` is temporary compatibility debt; retire it only
-  when: the catalogue codes exist; canonical MEMBER/NON-MEMBER roles include
-  `registrations:*`; any live-role migration is separately approved; token issuance is proven
-  to carry the new permissions; and the registration regression tests pass without fallback.
+  with the trusted user/tenant only, never body/query. Every denial is final: an absent
+  permission, token/tenant failures, `POLICY_SERVICE_ERROR` and evaluation errors/timeouts all
+  fail closed. On PERMIT it sets `req.policyContext`/`req.user`/`req.userId`/`req.tenantId` like
+  the middleware. The P5 transition fallback to the legacy `events:<action>`
+  (`LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK`) was retired in P8: switched off and verified on
+  DEV (live portal create + read; the portal write path by automated tests), then deleted.
+  **Rollout prerequisite in any other environment:** its MEMBER / NON-MEMBER roles must carry
+  `REGISTRATIONS_CREATE/READ/WRITE` first, or portal registration breaks there.
 - anything else → 403 `FORBIDDEN_CALLER`.
 
-Actions mirror what each route required before (so the fallback is exactly the old check):
+Actions mirror what each route required before the move to `registrations:*`:
 create → `create`; `/mine`, `GET /:id`, `attendance/self` → `read`; cancel, checkin-qr → `write`.
 A permission never grants another member's registration — ownership is still enforced by
 the gates above. Approve/reject and every other staff route stay `requireCrmUser` + `events:*`.
