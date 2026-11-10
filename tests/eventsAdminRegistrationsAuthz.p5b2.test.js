@@ -1,7 +1,7 @@
 /**
  * P5 batch 2 - event administration is CRM-only; portal self-service
  * registration routes move onto registrations:<action> (with the temporary
- * legacy events:<action> fallback); createRegistration identity and tier
+ * legacy events:<action> fallback, retired and deleted in P8); createRegistration identity and tier
  * eligibility are derived from the verified caller.
  *
  * PDP is mocked (tests/helpers/pdpMock.js). CRM/staff routes: the policy
@@ -49,7 +49,6 @@ const Template = require("../models/template.model.js");
 const {
   requireRegistrationPermission,
   evaluatePermission,
-  LEGACY_FALLBACK_ABSENT_REASONS,
 } = require("../middlewares/registrationPermission.mw.js");
 
 const TENANT = "tenant-p5b2-a";
@@ -353,7 +352,7 @@ describe("admin routes: CRM + permission effects, tenant-scoped", () => {
 
 // ---------------------------------------------------------------------------
 // 2. Portal self-service registration routes -> registrations:<action>; the legacy
-//    events:<action> fallback is OFF (P8 retirement step 1); CRM keeps events:*.
+//    events:<action> fallback is retired and deleted (P8); CRM keeps events:*.
 // ---------------------------------------------------------------------------
 const selfRoutes = [
   { name: "GET /registrations/:id", method: "get", action: "read", path: (r) => `/api/registrations/${r._id}` },
@@ -546,18 +545,14 @@ describe("requireRegistrationPermission / evaluatePermission (unit)", () => {
   }
   const portalReq = (pdp) => ({ user: { userType: "PORTAL" }, headers: { authorization: portalA(pdp) } });
 
-  it("production default: the fallback constant is OFF (P8 retirement step 1)", () => {
-    expect(require("../middlewares/registrationPermission.mw.js").LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK).toBe(false);
+  it("the fallback is deleted: no fallback switch, reason list or option is exported", () => {
+    const mod = require("../middlewares/registrationPermission.mw.js");
+    expect(Object.keys(mod).sort()).toEqual(["evaluatePermission", "requireRegistrationPermission"]);
+    expect(require("fs").readFileSync(require.resolve("../middlewares/registrationPermission.mw.js"), "utf8")).not.toMatch(/legacyFallback|LEGACY_/);
   });
 
-  it("rollback seam (legacyFallback: true) still re-evaluates only the EXACT legacy action on an absence reason", async () => {
-    const mw = requireRegistrationPermission("read", { legacyFallback: true });
-    expect(await run(mw, portalReq({ pdpDeny: ["registrations:read"] }))).toEqual({ status: "next" });
-    expect(defaultPolicyMiddleware.calls).not.toContain("events:write");
-  });
-
-  it("fallback switched off: PORTAL needs registrations:<action> (the 'pass without fallback' retirement check)", async () => {
-    const mw = requireRegistrationPermission("read", { legacyFallback: false });
+  it("PORTAL needs registrations:<action>; the legacy events:<action> alone never permits", async () => {
+    const mw = requireRegistrationPermission("read");
     expect(await run(mw, portalReq({ pdpDeny: ["registrations:read"] }))).toEqual(expect.objectContaining({ status: 403 }));
     expect(await run(mw, portalReq({ pdpDeny: ["events:read"] }))).toEqual({ status: "next" });
   });
@@ -610,11 +605,17 @@ describe("requireRegistrationPermission / evaluatePermission (unit)", () => {
     spy.mockRestore();
   });
 
-  it("documents exactly which PDP reasons count as 'absent'", () => {
-    expect([...LEGACY_FALLBACK_ABSENT_REASONS].sort()).toEqual(
-      ["INSUFFICIENT_RESOURCE_PERMISSION", "MISSING_PERMISSION", "PERMISSION_NOT_DEFINED", "UNKNOWN_RESOURCE"],
-    );
-  });
+  it.each(["UNKNOWN_RESOURCE", "INSUFFICIENT_RESOURCE_PERMISSION", "MISSING_PERMISSION", "PERMISSION_NOT_DEFINED"])(
+    "a PORTAL denial for an absent permission (%s) is final: one evaluation, 403",
+    async (reason) => {
+      const evaluate = jest.fn().mockResolvedValue({ decision: "DENY", reason, status: 403 });
+      const mw = requireRegistrationPermission("write", { evaluate });
+      const out = await run(mw, portalReq());
+      expect(out.status).toBe(403);
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(evaluate).toHaveBeenCalledWith(expect.anything(), "registrations", "write");
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

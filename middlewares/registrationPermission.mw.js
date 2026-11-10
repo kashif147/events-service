@@ -4,12 +4,11 @@
  * - CRM callers: the existing `events:<action>` policy middleware, unchanged
  *   (no fallback of any kind for CRM, and none for admin routes - those
  *   don't use this module).
- * - PORTAL callers: `registrations:<action>` (REGISTRATIONS_CREATE/READ/WRITE),
- *   evaluated directly via evaluatePermission() below. During the transition
- *   only, a denial whose PDP reason says the new permission is ABSENT
- *   (LEGACY_FALLBACK_ABSENT_REASONS) is re-evaluated against the exact legacy
- *   `events:<action>`. Any other denial, an outage or an error never falls
- *   back and fails closed.
+ * - PORTAL callers: `registrations:<action>` (REGISTRATIONS_CREATE/READ/WRITE)
+ *   only, evaluated directly via evaluatePermission() below. Every denial, an
+ *   outage or an error is final (fail closed). The P5 transition fallback to the
+ *   legacy `events:<action>` was retired in P8 (switched off, verified on DEV
+ *   with a live portal create + read, then deleted).
  * - Anything else (missing/unknown userType): 403 FORBIDDEN_CALLER, the PDP is
  *   not consulted.
  *
@@ -20,51 +19,9 @@
 const { getTrustedTenant } = require("@membership/policy-middleware");
 const { defaultPolicyMiddleware } = require("./policy.middleware.js");
 
-/**
- * TEMPORARY COMPATIBILITY DEBT (P5 transition) - the one switch for the
- * PORTAL registrations:* -> legacy events:* fallback.
- *
- * Retire (set to false, then delete the fallback branch and this constant)
- * only when ALL of these hold:
- *   1. REGISTRATIONS_CREATE / REGISTRATIONS_READ / REGISTRATIONS_WRITE exist in
- *      the permission catalogue;
- *   2. the canonical MEMBER and NON-MEMBER portal roles include registrations:*;
- *   3. any live-role migration has been separately approved and applied;
- *   4. token issuance is proven to carry the new registrations:* permissions;
- *   5. the registration regression tests pass with the fallback disabled
- *      (tests/eventsAdminRegistrationsAuthz.p5b2.test.js runs that variant).
- *
- * P8 (step 1 of the retirement): OFF. A PORTAL caller now needs
- * registrations:<action> itself; a missing permission is a 403 and the legacy
- * events:<action> is never evaluated. The branch below stays (unreachable in
- * production) only so this flag is a one-line rollback; deleting it and this
- * constant is step 2, after the owner accepts step 1.
- */
-const LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK = false;
-
-/**
- * PDP deny reasons (user-service services/policyEvaluationService.js) that mean
- * "the caller simply does not hold registrations:<action> / the resource is not
- * catalogued yet" - the only reasons that may fall back:
- *   UNKNOWN_RESOURCE                 - no catalogue permission for the resource at all
- *   INSUFFICIENT_RESOURCE_PERMISSION - caller holds no permission for the resource
- *   MISSING_PERMISSION               - caller lacks resource:action
- *   PERMISSION_NOT_DEFINED           - catalogue has no resource:action entry
- * Everything else - token/tenant failures (INVALID_TOKEN, TENANT_MISMATCH,
- * TENANT_SCOPE_VIOLATION, MISSING_TENANT_CONTEXT, RETIRED_ROLE_REAUTH_REQUIRED,
- * INVALID_USER_TYPE, ...), evaluation errors/timeouts (EVALUATION_ERROR,
- * EVALUATION_TIMEOUT, RESOURCE_EVALUATION_ERROR, PERMISSION_EVALUATION_ERROR)
- * and transport failures (POLICY_SERVICE_ERROR) - fails closed, no fallback.
- */
-const LEGACY_FALLBACK_ABSENT_REASONS = new Set([
-  "UNKNOWN_RESOURCE",
-  "INSUFFICIENT_RESOURCE_PERMISSION",
-  "MISSING_PERMISSION",
-  "PERMISSION_NOT_DEFINED",
-]);
-
 const REGISTRATIONS_RESOURCE = "registrations";
-const LEGACY_RESOURCE = "events";
+// CRM callers keep the staff events:<action> permission.
+const CRM_RESOURCE = "events";
 
 function parseHeaderArray(value) {
   try {
@@ -155,16 +112,12 @@ function denyResponse(res, evaluation, resource, action) {
 }
 
 /**
- * @param {"create"|"read"|"write"} action  exact action for registrations:* (PORTAL),
- *        its legacy events:* fallback, and the CRM events:* permission
- * @param {{legacyFallback?: boolean, evaluate?: Function}} [options] test seams;
- *        production always uses the constant and evaluatePermission
+ * @param {"create"|"read"|"write"} action  exact action for registrations:* (PORTAL)
+ *        and for the CRM events:* permission
+ * @param {{evaluate?: Function}} [options] test seam; production always uses evaluatePermission
  */
-function requireRegistrationPermission(
-  action,
-  { legacyFallback = LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK, evaluate = evaluatePermission } = {},
-) {
-  const crmMiddleware = defaultPolicyMiddleware.requirePermission(LEGACY_RESOURCE, action);
+function requireRegistrationPermission(action, { evaluate = evaluatePermission } = {}) {
+  const crmMiddleware = defaultPolicyMiddleware.requirePermission(CRM_RESOURCE, action);
 
   return async function registrationPermission(req, res, next) {
     const userType = typeof req.user?.userType === "string" ? req.user.userType : null;
@@ -184,20 +137,7 @@ function requireRegistrationPermission(
         applyPermit(req, primary.result);
         return next();
       }
-      if (!(legacyFallback && LEGACY_FALLBACK_ABSENT_REASONS.has(primary.reason))) {
-        return denyResponse(res, primary, REGISTRATIONS_RESOURCE, action);
-      }
-
-      // Safe log: resource:action + PDP reason only, no identifiers.
-      console.log(
-        `[REGISTRATION_PERMISSION] legacy fallback ${REGISTRATIONS_RESOURCE}:${action} (${primary.reason}) -> ${LEGACY_RESOURCE}:${action}`,
-      );
-      const legacy = await evaluate(req, LEGACY_RESOURCE, action);
-      if (legacy.decision === "PERMIT") {
-        applyPermit(req, legacy.result);
-        return next();
-      }
-      return denyResponse(res, legacy, LEGACY_RESOURCE, action);
+      return denyResponse(res, primary, REGISTRATIONS_RESOURCE, action);
     } catch (error) {
       // Fail closed on any evaluation error.
       return res.status(500).json({ success: false, error: "Authorization service error", code: "POLICY_SERVICE_ERROR" });
@@ -208,6 +148,4 @@ function requireRegistrationPermission(
 module.exports = {
   requireRegistrationPermission,
   evaluatePermission,
-  LEGACY_PORTAL_EVENTS_PERMISSION_FALLBACK,
-  LEGACY_FALLBACK_ABSENT_REASONS,
 };

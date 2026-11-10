@@ -147,8 +147,7 @@ router.put(
 router.post(
   "/:id/sessions/:sessionId/attendance/self",
   requirePortalUser,
-  // Action stays "read" (as before) so the transition fallback is exactly
-  // the permission this route required until now.
+  // Action stays "read" (as before): PORTAL needs registrations:read.
   requireRegistrationPermission("read"),
   checkinController.markAttendanceSelf,
 );
